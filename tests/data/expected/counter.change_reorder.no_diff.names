@@ -1,0 +1,4 @@
+t.clk
+t.cyc
+t.the_sub.cyc
+t.the_sub.cyc_plus_one

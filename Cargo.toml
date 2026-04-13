@@ -1,0 +1,33 @@
+[package]
+name = "wavetools"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Command-line tools for digital simulation waveform analysis — read, filter, and diff FST and VCD files"
+license = "MIT"
+repository = "https://github.com/hudson-trading/wavetools"
+keywords = ["waveform", "fst", "vcd", "eda", "simulation"]
+categories = ["command-line-utilities", "science"]
+
+[[bin]]
+name = "wavecat"
+path = "src/bin/wavecat.rs"
+
+[[bin]]
+name = "wavediff"
+path = "src/bin/wavediff.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+fst-reader = "0.16.5"
+glob = "0.3"
+# TODO: switch back to crates.io vcd once GTKWave extensions are upstreamed
+# (https://github.com/kevinmehall/rust-vcd)
+vcd = { path = "vcd" }
+
+[dev-dependencies]
+datatest-stable = "0.3"
+
+[[test]]
+name = "cat_tests"
+harness = false

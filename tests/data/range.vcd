@@ -1,0 +1,14 @@
+$timescale 1ps $end
+$scope module t $end
+$var wire 4 ! dat [3:0] $end
+$var wire 1 " clk $end
+$upscope $end
+$enddefinitions $end
+#0
+$dumpvars
+b0000 !
+0"
+$end
+#10
+b0101 !
+1"

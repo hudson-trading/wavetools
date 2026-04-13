@@ -1,0 +1,16 @@
+$timescale 1 ns $end
+$scope module top $end
+$var real 64 ! voltage $end
+$var real 64 " current $end
+$upscope $end
+$enddefinitions $end
+$dumpvars
+r1.5 !
+r0.5 "
+$end
+#10
+r2.5 !
+r1.5 "
+#20
+r3.5 !
+r2.5 "
