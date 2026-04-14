@@ -1,0 +1,4 @@
+t.clk  reg  1
+t.cyc  integer  32
+t.the_sub.blargh  integer  32
+t.the_sub.cyc  integer  32

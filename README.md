@@ -28,6 +28,7 @@ wavecat [OPTIONS] <FILE>
 | `-s, --start <TIME>` | Starting time |
 | `-e, --end <TIME>` | Ending time |
 | `-n, --names` | Print variable names only |
+| `-a, --attrs` | Print variable attributes (type, size, direction, attributes) |
 | `--sort` | Sort entries lexically |
 | `--time-pound` | Prefix times with `#` |
 | `--no-range-space` | Remove space before range brackets (e.g. `dat[3:0]` instead of `dat [3:0]`) |
@@ -127,6 +128,7 @@ wavediff [OPTIONS] <FILE1> <FILE2>
 | `-s, --start <TIME>` | Start time for comparison |
 | `-e, --end <TIME>` | End time for comparison |
 | `--epsilon <VALUE>` | Epsilon for comparing real-valued signals (absolute tolerance) |
+| `--no-attrs` | Skip metadata comparison (type, size, direction, attributes) |
 
 ### Exit codes
 
@@ -176,6 +178,12 @@ Compare with tolerance for real-valued signals:
 
 ```
 wavediff --epsilon 0.001 golden.fst test.fst
+```
+
+Skip metadata comparison (only compare signal values):
+
+```
+wavediff --no-attrs golden.fst test.fst
 ```
 
 ## Supported formats

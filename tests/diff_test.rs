@@ -6,7 +6,7 @@
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 
-use wavetools::{compare_signal_names, diff_waves, open_and_read_waves, NameOptions};
+use wavetools::{compare_signal_meta, compare_signal_names, diff_waves, open_and_read_waves, NameOptions};
 
 // Helper to check signal name differences
 fn check_signal_names(file1: &str, file2: &str) -> (bool, String) {
@@ -459,4 +459,281 @@ fn test_diff_zero_epsilon() {
         Some(0.0),
     );
     assert!(has_diff, "Zero epsilon should require exact match. Output:\n{}", output);
+}
+
+// ── Metadata comparison tests ──────────────────────────────────────────────
+
+#[test]
+fn test_diff_type_mismatch() {
+    let name_options = NameOptions::default();
+    let (_r1, map1, _r2, map2) =
+        open_and_read_waves(
+            "tests/data/type_mismatch.a.vcd",
+            "tests/data/type_mismatch.b.vcd",
+            &name_options,
+        )
+        .expect("Failed to open wave files");
+
+    let diffs = compare_signal_meta(&map1, &map2);
+    assert!(!diffs.is_empty(), "Should detect type mismatches");
+
+    // clk: wire vs reg
+    assert!(
+        diffs.iter().any(|d| d.contains("top.clk") && d.contains("wire") && d.contains("reg")),
+        "Should detect clk type mismatch: {:?}",
+        diffs
+    );
+    // state: wire vs reg
+    assert!(
+        diffs.iter().any(|d| d.contains("top.state") && d.contains("wire") && d.contains("reg")),
+        "Should detect state type mismatch: {:?}",
+        diffs
+    );
+}
+
+#[test]
+fn test_diff_size_mismatch() {
+    let name_options = NameOptions::default();
+    let (_r1, map1, _r2, map2) =
+        open_and_read_waves(
+            "tests/data/type_mismatch.a.vcd",
+            "tests/data/type_mismatch.b.vcd",
+            &name_options,
+        )
+        .expect("Failed to open wave files");
+
+    let diffs = compare_signal_meta(&map1, &map2);
+
+    // data: size 8 vs 16
+    assert!(
+        diffs.iter().any(|d| d.contains("top.data") && d.contains("8") && d.contains("16")),
+        "Should detect data size mismatch: {:?}",
+        diffs
+    );
+}
+
+#[test]
+fn test_diff_identical_metadata() {
+    let name_options = NameOptions::default();
+    let (_r1, map1, _r2, map2) =
+        open_and_read_waves(
+            "tests/data/type_mismatch.a.vcd",
+            "tests/data/type_mismatch.a.vcd",
+            &name_options,
+        )
+        .expect("Failed to open wave files");
+
+    let diffs = compare_signal_meta(&map1, &map2);
+    assert!(diffs.is_empty(), "Same file should have no metadata diffs: {:?}", diffs);
+}
+
+#[test]
+fn test_diff_cross_format_metadata() {
+    // FST and VCD of the same design may have different var types (FST preserves
+    // original types like "reg"/"integer" while VCD might use "wire"). Direction
+    // comparison should be skipped since VCD has no direction info ("implicit").
+    let name_options = NameOptions::default();
+    let (_r1, map1, _r2, map2) =
+        open_and_read_waves(
+            "tests/data/counter.fst",
+            "tests/data/counter.vcd",
+            &name_options,
+        )
+        .expect("Failed to open wave files");
+
+    let diffs = compare_signal_meta(&map1, &map2);
+    // Direction diffs should NOT appear since VCD direction is "implicit"
+    assert!(
+        !diffs.iter().any(|d| d.contains("direction")),
+        "Should not report direction diffs when VCD side is implicit: {:?}",
+        diffs
+    );
+}
+
+// ── Attribute comparison tests ──────────────────────────────────────────────
+
+#[test]
+fn test_diff_enum_attr_difference() {
+    // Same signal names/types/values, but different enum table attributes:
+    //   a: state has enum state_t (IDLE/ACTIVE/DONE)
+    //   b: state has enum alt_state_t (OFF/ON/ERR)
+    let name_options = NameOptions::default();
+    let (_r1, map1, _r2, map2) =
+        open_and_read_waves(
+            "tests/data/enum_attrs.a.vcd",
+            "tests/data/enum_attrs.b.vcd",
+            &name_options,
+        )
+        .expect("Failed to open wave files");
+
+    let diffs = compare_signal_meta(&map1, &map2);
+    assert!(
+        diffs.iter().any(|d| d.contains("top.state")),
+        "Should detect enum attribute difference on top.state: {:?}",
+        diffs
+    );
+}
+
+#[test]
+fn test_diff_misc_attr_difference() {
+    // Same signal names/types/values, but different misc attributes:
+    //   a: data has source path /path/to/source.v
+    //   b: data has source path /different/path.v
+    let name_options = NameOptions::default();
+    let (_r1, map1, _r2, map2) =
+        open_and_read_waves(
+            "tests/data/enum_attrs.a.vcd",
+            "tests/data/enum_attrs.b.vcd",
+            &name_options,
+        )
+        .expect("Failed to open wave files");
+
+    let diffs = compare_signal_meta(&map1, &map2);
+    assert!(
+        diffs.iter().any(|d| d.contains("top.data")),
+        "Should detect misc attribute difference on top.data: {:?}",
+        diffs
+    );
+}
+
+#[test]
+fn test_diff_attr_present_vs_absent() {
+    // a: state has enum attr, data has source path attr
+    // missing: no attrs on any signal
+    let name_options = NameOptions::default();
+    let (_r1, map1, _r2, map2) =
+        open_and_read_waves(
+            "tests/data/enum_attrs.a.vcd",
+            "tests/data/enum_attrs.missing.vcd",
+            &name_options,
+        )
+        .expect("Failed to open wave files");
+
+    let diffs = compare_signal_meta(&map1, &map2);
+    assert!(
+        diffs.iter().any(|d| d.contains("top.state")),
+        "Should detect missing enum attr on top.state: {:?}",
+        diffs
+    );
+    assert!(
+        diffs.iter().any(|d| d.contains("top.data")),
+        "Should detect missing source attr on top.data: {:?}",
+        diffs
+    );
+}
+
+#[test]
+fn test_diff_identical_attrs_no_diff() {
+    // Same file compared to itself — no attr differences
+    let name_options = NameOptions::default();
+    let (_r1, map1, _r2, map2) =
+        open_and_read_waves(
+            "tests/data/enum_attrs.a.vcd",
+            "tests/data/enum_attrs.a.vcd",
+            &name_options,
+        )
+        .expect("Failed to open wave files");
+
+    let diffs = compare_signal_meta(&map1, &map2);
+    assert!(diffs.is_empty(), "Same file should have no diffs: {:?}", diffs);
+}
+
+#[test]
+fn test_diff_real_size_normalized_across_formats() {
+    // FST stores real signal sizes in bytes (8), VCD in bits (64).
+    // After normalization both should report 64 — no size mismatch.
+    let name_options = NameOptions::default();
+    let (_r1, map1, _r2, map2) =
+        open_and_read_waves(
+            "tests/data/real_base.fst",
+            "tests/data/real_base.vcd",
+            &name_options,
+        )
+        .expect("Failed to open wave files");
+
+    let diffs = compare_signal_meta(&map1, &map2);
+    assert!(
+        diffs.is_empty(),
+        "FST and VCD of the same design should have no metadata diffs: {:?}",
+        diffs
+    );
+}
+
+// ── --no-attrs CLI tests ────────────────────────────────────────────────────
+
+fn run_wavediff_cli(file1: &str, file2: &str, extra_args: &[&str]) -> std::process::Output {
+    let bin = env!("CARGO_BIN_EXE_wavediff");
+    std::process::Command::new(bin)
+        .args(extra_args)
+        .arg(file1)
+        .arg(file2)
+        .output()
+        .expect("Failed to run wavediff")
+}
+
+#[test]
+fn test_cli_attr_diff_nonzero_exit() {
+    // Different attrs, same values — should exit 1
+    let output = run_wavediff_cli(
+        "tests/data/enum_attrs.a.vcd",
+        "tests/data/enum_attrs.b.vcd",
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "Attr diffs should cause exit 1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("top.state"), "stderr should mention top.state: {}", stderr);
+    assert!(stderr.contains("top.data"), "stderr should mention top.data: {}", stderr);
+}
+
+#[test]
+fn test_cli_no_attrs_ignores_attr_diff() {
+    // Different attrs, same values — --no-attrs should make it exit 0
+    let output = run_wavediff_cli(
+        "tests/data/enum_attrs.a.vcd",
+        "tests/data/enum_attrs.b.vcd",
+        &["--no-attrs"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "--no-attrs should ignore attr differences. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_cli_no_attrs_ignores_missing_attrs() {
+    // Attrs in one file, none in the other — --no-attrs should exit 0
+    let output = run_wavediff_cli(
+        "tests/data/enum_attrs.a.vcd",
+        "tests/data/enum_attrs.missing.vcd",
+        &["--no-attrs"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "--no-attrs should ignore missing attrs. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_cli_no_attrs_still_detects_value_diffs() {
+    // --no-attrs skips metadata but should still catch value differences
+    let output = run_wavediff_cli(
+        "tests/data/counter.vcd",
+        "tests/data/counter.value.diff.vcd",
+        &["--no-attrs"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "--no-attrs should still detect value diffs"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("cyc_plus_one"),
+        "--no-attrs stdout should contain value diff: {}",
+        stdout
+    );
 }

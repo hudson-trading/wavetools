@@ -8,7 +8,10 @@
 
 use clap::Parser;
 use glob::Pattern;
-use wavetools::{open_wave_file_with_format, write_names, write_signals_wave, NameOptions, SignalNames, SignalOutputOptions, WaveFormat};
+use wavetools::{
+    names_only, open_wave_file_with_format, write_attrs, write_names, write_signals_wave,
+    NameOptions, SignalMap, SignalOutputOptions, WaveFormat,
+};
 use std::path::PathBuf;
 use std::process;
 
@@ -36,8 +39,12 @@ struct Args {
     end: Option<u64>,
 
     /// Print variable names only
-    #[arg(short, long)]
+    #[arg(short, long, conflicts_with = "attrs")]
     names: bool,
+
+    /// Print variable attributes (type, size, direction)
+    #[arg(short, long, conflicts_with = "names")]
+    attrs: bool,
 
     /// Sort entries lexically
     #[arg(long)]
@@ -78,18 +85,12 @@ fn main() {
     }
 }
 
-fn print_names(handle_to_names: &SignalNames, sort: bool) -> Result<(), String> {
-    let mut stdout = std::io::stdout();
-    write_names(&mut stdout, handle_to_names, sort)
-        .map_err(|e| format!("Failed to write names: {}", e))
-}
-
 fn process_wave_file(args: &Args) -> Result<(), String> {
     let name_options = NameOptions {
         no_range_space: args.no_range_space,
     };
 
-    let (mut reader, handle_to_names) =
+    let (mut reader, signal_map) =
         open_wave_file_with_format(&args.file, &name_options, args.format)?;
 
     let patterns: Vec<Pattern> = args.filter
@@ -98,24 +99,29 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
         .map(|p| Pattern::new(p).map_err(|e| format!("Invalid glob pattern '{}': {}", p, e)))
         .collect::<Result<_, _>>()?;
 
-    let handle_to_names = if !patterns.is_empty() {
-        handle_to_names
+    let signal_map: SignalMap = if !patterns.is_empty() {
+        signal_map
             .into_iter()
-            .filter_map(|(handle, names)| {
-                let filtered: Vec<String> = names
-                    .into_iter()
-                    .filter(|name| patterns.iter().any(|p| p.matches(name)))
-                    .collect();
-                if filtered.is_empty() { None } else { Some((handle, filtered)) }
+            .filter_map(|(handle, mut info)| {
+                info.vars.retain(|v| patterns.iter().any(|p| p.matches(&v.name)));
+                if info.vars.is_empty() { None } else { Some((handle, info)) }
             })
             .collect()
     } else {
-        handle_to_names
+        signal_map
     };
 
-    if args.names {
-        print_names(&handle_to_names, args.sort)?;
+    if args.attrs {
+        let mut stdout = std::io::stdout();
+        write_attrs(&mut stdout, &signal_map, args.sort)
+            .map_err(|e| format!("Failed to write attrs: {}", e))?;
+    } else if args.names {
+        let names = names_only(&signal_map);
+        let mut stdout = std::io::stdout();
+        write_names(&mut stdout, &names, args.sort)
+            .map_err(|e| format!("Failed to write names: {}", e))?;
     } else {
+        let names = names_only(&signal_map);
         let output_options = SignalOutputOptions {
             time_pound: args.time_pound,
             sort: args.sort,
@@ -125,7 +131,7 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
         write_signals_wave(
             &mut stdout,
             &mut reader,
-            &handle_to_names,
+            &names,
             args.start.unwrap_or(0),
             args.end,
             &output_options,

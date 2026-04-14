@@ -1,0 +1,7 @@
+0 top.clk 0
+0 top.data 00000000
+0 top.state 0000
+10 top.clk 1
+10 top.data 00000001
+10 top.state 0001
+20 top.clk 0

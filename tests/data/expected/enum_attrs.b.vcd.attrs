@@ -1,0 +1,5 @@
+top.clk  wire  1
+top.data  wire  8
+  misc 03: /different/path.v 20
+top.state  reg  2
+  enum alt_state_t: OFF=0 ON=1 ERR=2

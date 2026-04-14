@@ -1,0 +1,2 @@
+t.clk  wire  1
+t.dat [3:0]  wire  4

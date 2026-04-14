@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use wavetools::{open_wave_file, write_names, write_signals_wave, NameOptions, SignalOutputOptions};
+use wavetools::{names_only, open_wave_file, write_attrs, write_names, write_signals_wave, NameOptions, SignalOutputOptions};
 
 /// Strip the .fst or .vcd extension to get the base name used for expected files.
 fn base_name(path: &Path) -> String {
@@ -38,7 +38,8 @@ fn test_names(path: &Path) -> datatest_stable::Result<()> {
     })?;
 
     let name_options = NameOptions::default();
-    let (_, handle_to_names) = open_wave_file(path, &name_options)?;
+    let (_, signal_map) = open_wave_file(path, &name_options)?;
+    let handle_to_names = names_only(&signal_map);
 
     let mut output = Vec::new();
     write_names(&mut output, &handle_to_names, true)?;
@@ -66,7 +67,8 @@ fn test_cat(path: &Path) -> datatest_stable::Result<()> {
     })?;
 
     let name_options = NameOptions::default();
-    let (mut reader, handle_to_names) = open_wave_file(path, &name_options)?;
+    let (mut reader, signal_map) = open_wave_file(path, &name_options)?;
+    let handle_to_names = names_only(&signal_map);
 
     let options = SignalOutputOptions {
         sort: true,
@@ -80,7 +82,38 @@ fn test_cat(path: &Path) -> datatest_stable::Result<()> {
     Ok(())
 }
 
+/// For each .fst/.vcd file, compare sorted `write_attrs` output against
+/// `tests/data/expected/{filename}.attrs`.  Unlike names/cat tests, attrs
+/// include the format extension because type metadata differs across formats
+/// (e.g. FST preserves "reg"/"integer" while VCD uses "wire").
+fn test_attrs(path: &Path) -> datatest_stable::Result<()> {
+    let file_name = path.file_name().unwrap().to_str().unwrap();
+    let expected_path = path
+        .parent()
+        .unwrap()
+        .join(format!("expected/{}.attrs", file_name));
+    let expected = std::fs::read_to_string(&expected_path).map_err(|e| {
+        format!(
+            "Missing expected file {}: {} — generate it with: wavecat --attrs --sort {}",
+            expected_path.display(),
+            e,
+            path.display(),
+        )
+    })?;
+
+    let name_options = NameOptions::default();
+    let (_, signal_map) = open_wave_file(path, &name_options)?;
+
+    let mut output = Vec::new();
+    write_attrs(&mut output, &signal_map, true)?;
+    let actual = String::from_utf8(output)?;
+
+    assert_eq!(actual, expected, "attrs mismatch for {}", path.display());
+    Ok(())
+}
+
 datatest_stable::harness! {
     { test = test_names, root = "tests/data", pattern = r"^[^/]+\.(fst|vcd)$" },
     { test = test_cat,   root = "tests/data", pattern = r"^[^/]+\.(fst|vcd)$" },
+    { test = test_attrs, root = "tests/data", pattern = r"^[^/]+\.(fst|vcd)$" },
 }

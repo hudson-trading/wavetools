@@ -1,0 +1,5 @@
+top.clk  wire  1
+top.data  wire  8
+  misc 03: /path/to/source.v 10
+top.state  reg  4
+  enum state_t: IDLE=0 ACTIVE=1 DONE=2

@@ -14,7 +14,7 @@ use std::sync::mpsc;
 
 use fst_reader::{FstFilter, FstSignalValue};
 
-use crate::{next_vcd_change, NameOptions, SignalNames, WaveReader};
+use crate::{names_only, next_vcd_change, NameOptions, SignalMap, SignalNames, WaveReader};
 
 /// Owned version of `FstSignalValue` for sending through channels
 #[derive(Debug, Clone)]
@@ -79,11 +79,17 @@ impl OwnedSignalValue {
 
 /// Compare signal names between two waveform files and return the differences
 pub fn compare_signal_names(
-    names1: &SignalNames,
-    names2: &SignalNames,
+    map1: &SignalMap,
+    map2: &SignalMap,
 ) -> (HashSet<String>, HashSet<String>) {
-    let set1: HashSet<String> = names1.values().flat_map(|v| v.iter().cloned()).collect();
-    let set2: HashSet<String> = names2.values().flat_map(|v| v.iter().cloned()).collect();
+    let set1: HashSet<String> = map1
+        .values()
+        .flat_map(|info| info.vars.iter().map(|v| v.name.clone()))
+        .collect();
+    let set2: HashSet<String> = map2
+        .values()
+        .flat_map(|info| info.vars.iter().map(|v| v.name.clone()))
+        .collect();
 
     let only_in_1: HashSet<String> = set1.difference(&set2).cloned().collect();
     let only_in_2: HashSet<String> = set2.difference(&set1).cloned().collect();
@@ -344,15 +350,65 @@ fn send_wave_changes(
     }
 }
 
+/// Compare metadata and attributes for signals that share the same name across two files.
+/// Returns a list of human-readable difference strings.
+/// Direction is only compared if both sides have an explicit (non-implicit) direction.
+pub fn compare_signal_meta(
+    map1: &SignalMap,
+    map2: &SignalMap,
+) -> Vec<String> {
+    let mut diffs = Vec::new();
+
+    // Build name → VarEntry lookup for both maps
+    let entries1: HashMap<&str, &crate::VarEntry> = map1
+        .values()
+        .flat_map(|info| info.vars.iter().map(|v| (v.name.as_str(), v)))
+        .collect();
+    let entries2: HashMap<&str, &crate::VarEntry> = map2
+        .values()
+        .flat_map(|info| info.vars.iter().map(|v| (v.name.as_str(), v)))
+        .collect();
+
+    let mut common: Vec<&&str> = entries1.keys().filter(|n| entries2.contains_key(**n)).collect();
+    common.sort();
+
+    for name in common {
+        let v1 = entries1[*name];
+        let v2 = entries2[*name];
+        if v1.meta.var_type != v2.meta.var_type {
+            diffs.push(format!("{}: type {} != {}", name, v1.meta.var_type, v2.meta.var_type));
+        }
+        if v1.meta.size != v2.meta.size {
+            diffs.push(format!("{}: size {} != {}", name, v1.meta.size, v2.meta.size));
+        }
+        if v1.meta.direction != crate::IMPLICIT_DIRECTION
+            && v2.meta.direction != crate::IMPLICIT_DIRECTION
+            && v1.meta.direction != v2.meta.direction
+        {
+            diffs.push(format!(
+                "{}: direction {} != {}",
+                name, v1.meta.direction, v2.meta.direction
+            ));
+        }
+        if v1.attrs != v2.attrs {
+            let a1 = if v1.attrs.is_empty() { "(none)".to_string() } else { v1.attrs.join("; ") };
+            let a2 = if v2.attrs.is_empty() { "(none)".to_string() } else { v2.attrs.join("; ") };
+            diffs.push(format!("{}: attrs [{}] != [{}]", name, a1, a2));
+        }
+    }
+
+    diffs
+}
+
 /// Open two waveform files (any mix of FST/VCD) and return both readers and hierarchies
 pub fn open_and_read_waves<P1: AsRef<Path>, P2: AsRef<Path>>(
     path1: P1,
     path2: P2,
     options: &NameOptions,
-) -> Result<(WaveReader, SignalNames, WaveReader, SignalNames), String> {
-    let (r1, n1) = crate::open_wave_file(path1.as_ref(), options)?;
-    let (r2, n2) = crate::open_wave_file(path2.as_ref(), options)?;
-    Ok((r1, n1, r2, n2))
+) -> Result<(WaveReader, SignalMap, WaveReader, SignalMap), String> {
+    let (r1, m1) = crate::open_wave_file(path1.as_ref(), options)?;
+    let (r2, m2) = crate::open_wave_file(path2.as_ref(), options)?;
+    Ok((r1, m1, r2, m2))
 }
 
 /// Compare two waveform files (any mix of FST/VCD) and write differences
@@ -362,14 +418,16 @@ pub fn open_and_read_waves<P1: AsRef<Path>, P2: AsRef<Path>>(
 pub fn diff_waves<W: Write>(
     writer: &mut W,
     reader1: WaveReader,
-    handle_to_names1: &SignalNames,
+    signal_map1: &SignalMap,
     reader2: WaveReader,
-    handle_to_names2: &SignalNames,
+    signal_map2: &SignalMap,
     start: u64,
     end: Option<u64>,
     real_epsilon: Option<f64>,
 ) -> std::io::Result<bool> {
-    let handle_mapping = build_handle_mapping(handle_to_names1, handle_to_names2);
+    let handle_to_names1 = names_only(signal_map1);
+    let handle_to_names2 = names_only(signal_map2);
+    let handle_mapping = build_handle_mapping(&handle_to_names1, &handle_to_names2);
 
     let (tx1, rx1) = mpsc::channel();
     let (tx2, rx2) = mpsc::channel();
@@ -382,8 +440,8 @@ pub fn diff_waves<W: Write>(
         rx1,
         rx2,
         &handle_mapping,
-        handle_to_names1,
-        handle_to_names2,
+        &handle_to_names1,
+        &handle_to_names2,
         real_epsilon,
     );
 

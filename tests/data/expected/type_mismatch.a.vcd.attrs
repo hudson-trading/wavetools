@@ -1,0 +1,3 @@
+top.clk  wire  1
+top.data  wire  8
+top.state  wire  4

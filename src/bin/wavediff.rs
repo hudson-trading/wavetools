@@ -7,8 +7,9 @@
 //------------------------------------------------------------------------------
 
 use clap::Parser;
-use wavetools::{compare_signal_names, diff_waves, open_and_read_waves, NameOptions};
+use std::io::Write;
 use std::path::PathBuf;
+use wavetools::{compare_signal_meta, compare_signal_names, diff_waves, open_and_read_waves, NameOptions};
 
 #[derive(Parser, Debug)]
 #[command(name = "wavediff")]
@@ -42,6 +43,10 @@ struct Args {
     /// Epsilon for comparing real-valued signals (absolute tolerance)
     #[arg(long)]
     epsilon: Option<f64>,
+
+    /// Skip metadata comparison (type, size, direction, attributes)
+    #[arg(long)]
+    no_attrs: bool,
 }
 
 fn main() {
@@ -73,10 +78,10 @@ fn run(args: Args) -> Result<bool, String> {
     }
 
     let name_options = NameOptions::default();
-    let (reader1, handle_to_names1, reader2, handle_to_names2) =
+    let (reader1, signal_map1, reader2, signal_map2) =
         open_and_read_waves(&args.file1, &args.file2, &name_options)?;
 
-    let (only_in_1, only_in_2) = compare_signal_names(&handle_to_names1, &handle_to_names2);
+    let (only_in_1, only_in_2) = compare_signal_names(&signal_map1, &signal_map2);
 
     if !only_in_1.is_empty() || !only_in_2.is_empty() {
         eprintln!("Signal name mismatch:");
@@ -97,18 +102,31 @@ fn run(args: Args) -> Result<bool, String> {
         return Err("Signal names differ between files".to_string());
     }
 
+    let mut has_differences = false;
+
+    if !args.no_attrs {
+        let meta_diffs = compare_signal_meta(&signal_map1, &signal_map2);
+        if !meta_diffs.is_empty() {
+            has_differences = true;
+            let mut stderr = std::io::stderr();
+            for diff in &meta_diffs {
+                let _ = writeln!(stderr, "{}", diff);
+            }
+        }
+    }
+
     let mut stdout = std::io::stdout();
-    let has_differences = diff_waves(
+    let value_diffs = diff_waves(
         &mut stdout,
         reader1,
-        &handle_to_names1,
+        &signal_map1,
         reader2,
-        &handle_to_names2,
+        &signal_map2,
         args.start.unwrap_or(0),
         args.end,
         args.epsilon,
     )
     .map_err(|e| format!("Failed to diff files: {}", e))?;
 
-    Ok(has_differences)
+    Ok(has_differences || value_diffs)
 }

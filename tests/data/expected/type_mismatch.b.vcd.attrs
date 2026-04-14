@@ -1,0 +1,3 @@
+top.clk  reg  1
+top.data  wire  16
+top.state  reg  4

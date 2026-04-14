@@ -1,0 +1,5 @@
+t.clk  reg  1
+t.cyc  integer  32
+t.the_sub.cyc  integer  32
+t.the_sub.cyc_plus_one  integer  32
+t.the_sub.new_sig  integer  32

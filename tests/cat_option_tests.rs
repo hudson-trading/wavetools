@@ -7,14 +7,15 @@
 //------------------------------------------------------------------------------
 
 use wavetools::{
-    open_wave_file, open_wave_file_with_format, write_names, write_signals_wave, NameOptions,
-    SignalOutputOptions, WaveFormat,
+    names_only, open_wave_file, open_wave_file_with_format, write_names, write_signals_wave,
+    NameOptions, SignalOutputOptions, WaveFormat,
 };
 use std::path::Path;
 
 fn read_names_with_options(path: &str, name_options: &NameOptions) -> String {
-    let (_, handle_to_names) =
+    let (_, signal_map) =
         open_wave_file(Path::new(path), name_options).expect("Failed to open wave file");
+    let handle_to_names = names_only(&signal_map);
 
     let mut output = Vec::new();
     write_names(&mut output, &handle_to_names, true).expect("Failed to write names");
@@ -28,8 +29,9 @@ fn read_signals_with_options(
     output_options: &SignalOutputOptions,
 ) -> String {
     let name_options = NameOptions::default();
-    let (mut reader, handle_to_names) =
+    let (mut reader, signal_map) =
         open_wave_file(Path::new(path), &name_options).expect("Failed to open wave file");
+    let handle_to_names = names_only(&signal_map);
 
     let mut output = Vec::new();
     write_signals_wave(
