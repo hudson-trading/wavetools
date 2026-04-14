@@ -23,7 +23,7 @@ pub enum TimescaleUnit {
     FS,
 }
 
-crate::unit_error_struct!(InvalidTimescaleUnit, "invalid timescale unit");
+super::unit_error_struct!(InvalidTimescaleUnit, "invalid timescale unit");
 
 impl FromStr for TimescaleUnit {
     type Err = InvalidTimescaleUnit;

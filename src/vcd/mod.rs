@@ -13,7 +13,7 @@
 //!
 //! ## Example
 //!
-//! ```
+//! ```ignore
 //! use std::io;
 //! use std::io::ErrorKind::InvalidInput;
 //! use vcd::{ self, Value, TimescaleUnit, SimulationCommand };
@@ -285,7 +285,7 @@ impl Header {
     ///
     /// ## Example
     ///
-    /// ```rust
+    /// ```ignore
     /// let mut parser = vcd::Parser::new(&b"
     /// $scope module a $end
     /// $scope module b $end
@@ -315,7 +315,7 @@ impl Header {
     ///
     /// ## Example
     ///
-    /// ```rust
+    /// ```ignore
     /// let mut parser = vcd::Parser::new(&b"
     /// $scope module a $end
     /// $scope module b $end

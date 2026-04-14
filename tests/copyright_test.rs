@@ -18,6 +18,10 @@ fn collect_rs_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
         let entry = entry.unwrap();
         let path = entry.path();
         if path.is_dir() {
+            // Skip vendored third-party code
+            if path.ends_with("vcd") {
+                continue;
+            }
             collect_rs_files(&path, files);
         } else if path.extension().is_some_and(|ext| ext == "rs") {
             files.push(path);

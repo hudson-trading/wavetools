@@ -15,7 +15,7 @@ pub enum AttributeType {
     Pack,
 }
 
-crate::unit_error_struct!(InvalidAttributeType, "invalid attribute type");
+super::unit_error_struct!(InvalidAttributeType, "invalid attribute type");
 
 impl FromStr for AttributeType {
     type Err = InvalidAttributeType;
@@ -69,7 +69,7 @@ pub enum MiscAttributeSubtype {
     Unknown,
 }
 
-crate::unit_error_struct!(InvalidMiscAttributeSubtype, "invalid misc attribute subtype");
+super::unit_error_struct!(InvalidMiscAttributeSubtype, "invalid misc attribute subtype");
 
 impl MiscAttributeSubtype {
     /// Parse from the two-digit hex string used in VCD text.
@@ -124,7 +124,7 @@ pub enum ArrayType {
     Sparse,
 }
 
-crate::unit_error_struct!(InvalidArrayType, "invalid array type");
+super::unit_error_struct!(InvalidArrayType, "invalid array type");
 
 impl FromStr for ArrayType {
     type Err = InvalidArrayType;
@@ -188,7 +188,7 @@ pub enum EnumValueType {
     UnsignedByte,
 }
 
-crate::unit_error_struct!(InvalidEnumValueType, "invalid enum value type");
+super::unit_error_struct!(InvalidEnumValueType, "invalid enum value type");
 
 impl FromStr for EnumValueType {
     type Err = InvalidEnumValueType;
@@ -252,7 +252,7 @@ pub enum PackType {
     TaggedPacked,
 }
 
-crate::unit_error_struct!(InvalidPackType, "invalid pack type");
+super::unit_error_struct!(InvalidPackType, "invalid pack type");
 
 impl FromStr for PackType {
     type Err = InvalidPackType;

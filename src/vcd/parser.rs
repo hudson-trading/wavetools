@@ -2,7 +2,7 @@ use std::num::{ParseIntError, ParseFloatError};
 use std::{io, fmt};
 use std::str::{from_utf8, FromStr};
 
-use crate::{
+use super::{
     Attribute, AttributeType, Command, Header, InvalidAttributeType, InvalidIdCode,
     InvalidMiscAttributeSubtype, InvalidReferenceIndex, InvalidScopeType, InvalidTimescaleUnit,
     InvalidValue, InvalidVarType, MiscAttributeSubtype, ReferenceIndex, Scope, ScopeItem,
@@ -19,7 +19,7 @@ fn whitespace_byte(b: u8) -> bool {
 ///
 /// ### Example
 ///
-/// ```rust,no_run
+/// ```ignore
 /// # use std::error::Error;
 /// # fn main() -> Result<(), Box<dyn Error>> {
 /// use std::{io::BufReader, fs::File};
@@ -47,7 +47,7 @@ fn whitespace_byte(b: u8) -> bool {
 /// error type and line number for [`std::io::ErrorKind::InvalidData`], the
 /// error can be downcast to [`ParseError`]:
 ///
-/// ```rust
+/// ```ignore
 /// use vcd::{Parser, ParseError, ParseErrorKind};
 /// let text = "AAAAA";
 /// let res = Parser::new(text.as_bytes()).parse_header();
@@ -69,13 +69,13 @@ impl<R: io::BufRead> Parser<R> {
     /// Creates a parser wrapping an [`io::BufRead`].
     ///
     /// ### From a string
-    /// ```
+    /// ```ignore
     /// let s = "...";
     /// let mut vcd = vcd::Parser::new(s.as_bytes());
     /// ```
     ///
     /// ### From a file
-    /// ```rust,no_run
+    /// ```ignore
     /// use std::{fs::File, io::BufReader};
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let name = "foo.vcd";
@@ -339,7 +339,7 @@ impl<R: io::BufRead> Parser<R> {
             b"var" => {
                 let mut vt_buf = [0; 32];
                 let vt_tok = self.read_token_str(&mut vt_buf)?;
-                let var_type = crate::VarType::from_str_ext(vt_tok, self.gtkwave_extensions)
+                let var_type = super::VarType::from_str_ext(vt_tok, self.gtkwave_extensions)
                     .map_err(|e| self.error(e))?;
                 let size = self.read_token_parse()?;
                 let code = self.read_token_parse()?;
@@ -695,7 +695,7 @@ impl From<ParseError> for io::Error {
 
 #[cfg(test)]
 mod test {
-    use crate::{
+    use crate::vcd::{
         Command::*, Parser, ReferenceIndex, ScopeItem, ScopeType, SimulationCommand::*,
         TimescaleUnit, Value::*, Var, VarType, Vector, ParseError, ParseErrorKind,
     };
@@ -1310,7 +1310,7 @@ $enddefinitions $end
 
     #[test]
     fn gtkwave_attribute_misc() {
-        use crate::AttributeType;
+        use crate::vcd::AttributeType;
 
         let sample = b"
 $scope module top $end
@@ -1354,7 +1354,7 @@ $enddefinitions $end
 
     #[test]
     fn gtkwave_attribute_array_enum_pack() {
-        use crate::AttributeType;
+        use crate::vcd::AttributeType;
 
         let sample = b"
 $scope module top $end
@@ -1534,7 +1534,7 @@ $enddefinitions $end
 
     #[test]
     fn gtkwave_attribute_top_level() {
-        use crate::AttributeType;
+        use crate::vcd::AttributeType;
 
         let sample = b"
 $attrbegin misc 03 /path/to/file 1 $end
@@ -1561,7 +1561,7 @@ $enddefinitions $end
 
     #[test]
     fn gtkwave_roundtrip() {
-        use crate::AttributeType;
+        use crate::vcd::AttributeType;
 
         let sample = b"
 $scope generate gen0 $end
@@ -1582,7 +1582,7 @@ $enddefinitions $end
         // Write
         let mut buf = Vec::new();
         {
-            let mut writer = crate::Writer::new(&mut buf);
+            let mut writer = crate::vcd::Writer::new(&mut buf);
             writer.header(&header).unwrap();
         }
 
@@ -1699,7 +1699,7 @@ $enddefinitions $end
 
     #[test]
     fn gtkwave_enum_table_attribute() {
-        use crate::AttributeType;
+        use crate::vcd::AttributeType;
 
         let sample = b"
 $scope module top $end

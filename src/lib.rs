@@ -8,6 +8,8 @@
 
 mod cat;
 mod diff;
+#[allow(dead_code, unused_imports, clippy::manual_repeat_n, mismatched_lifetime_syntaxes)]
+mod vcd;
 
 pub use cat::{write_signals_wave, SignalOutputOptions};
 pub use diff::{compare_signal_names, diff_waves, open_and_read_waves};

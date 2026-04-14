@@ -22,7 +22,7 @@ pub enum Value {
     Z,
 }
 
-crate::unit_error_struct!(InvalidValue, "invalid VCD logic value");
+super::unit_error_struct!(InvalidValue, "invalid VCD logic value");
 
 impl Value {
     pub(crate) fn parse(v: u8) -> Result<Value, InvalidValue> {

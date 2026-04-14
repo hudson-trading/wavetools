@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::{
+use super::{
     Attribute, AttributeType, Command, Header, IdCode, ReferenceIndex, Scope, ScopeItem,
     ScopeType, SimulationCommand, TimescaleUnit, Value, Var, VarType,
 };
@@ -8,26 +8,26 @@ use crate::{
 /// Struct wrapping an [`std::io::Write`] with methods for writing VCD commands and data.
 /// 
 /// ## Example
-/// ```rust,no_run
+/// ```ignore
 /// # use std::error::Error;
 /// # fn main() -> Result<(), Box<dyn Error>> {
 /// use std::{fs::File, io::BufWriter};
 /// use vcd::{Value, TimescaleUnit};
-/// 
+///
 /// let mut writer = vcd::Writer::new(BufWriter::new(File::create("test.vcd")?));
-/// 
+///
 /// writer.timescale(1, TimescaleUnit::US)?;
 /// writer.add_module("top")?;
 /// let clock = writer.add_wire(1, "clock")?;
 /// writer.upscope()?;
 /// writer.enddefinitions()?;
-/// 
+///
 /// let mut t = 0;
 /// while t < 100 {
 ///     writer.timestamp(t)?;
 ///     writer.change_scalar(clock, Value::V0)?;
 ///     t += 2;
-/// 
+///
 ///     writer.timestamp(t)?;
 ///     writer.change_scalar(clock, Value::V1)?;
 ///     t += 2;
@@ -43,7 +43,7 @@ pub struct Writer<W: io::Write> {
 impl<W: io::Write> Writer<W> {
     /// Creates a Writer wrapping an [`io::Write`].
     ///
-    /// ```
+    /// ```ignore
     /// let mut buf = Vec::new();
     /// let mut vcd = vcd::Writer::new(&mut buf);
     /// ```

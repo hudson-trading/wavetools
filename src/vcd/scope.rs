@@ -1,8 +1,8 @@
 use std::fmt::{self, Display};
 use std::str::FromStr;
 
-use crate::IdCode;
-use crate::Attribute;
+use super::IdCode;
+use super::Attribute;
 
 /// A type of scope, as used in the `$scope` command.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -34,7 +34,7 @@ pub enum ScopeType {
     SvArray,
 }
 
-crate::unit_error_struct!(InvalidScopeType, "invalid scope type");
+super::unit_error_struct!(InvalidScopeType, "invalid scope type");
 
 impl ScopeType {
     /// Parse a scope type string, optionally accepting GTKWave extension types.
@@ -151,7 +151,7 @@ pub enum VarType {
     RealParameter,
 }
 
-crate::unit_error_struct!(InvalidVarType, "invalid variable type");
+super::unit_error_struct!(InvalidVarType, "invalid variable type");
 
 impl VarType {
     /// Parse a var type string, optionally accepting GTKWave extension types.
@@ -292,7 +292,7 @@ impl Default for Scope {
 ///
 /// `ReferenceIndex` can be parsed with [`FromStr`]:
 ///
-/// ```
+/// ```ignore
 /// # use vcd::ReferenceIndex;
 /// assert_eq!("[7:0]".parse(), Ok(ReferenceIndex::Range(7, 0)));
 /// ```
@@ -305,7 +305,7 @@ pub enum ReferenceIndex {
     Range(i32, i32),
 }
 
-crate::unit_error_struct!(InvalidReferenceIndex, "invalid reference index");
+super::unit_error_struct!(InvalidReferenceIndex, "invalid reference index");
 
 impl FromStr for ReferenceIndex {
     type Err = InvalidReferenceIndex;
