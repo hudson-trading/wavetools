@@ -661,6 +661,15 @@ fn test_diff_real_size_normalized_across_formats() {
 
 // ── --no-attrs CLI tests ────────────────────────────────────────────────────
 
+fn run_wavecat_cli(file: &str, extra_args: &[&str]) -> std::process::Output {
+    let bin = env!("CARGO_BIN_EXE_wavecat");
+    std::process::Command::new(bin)
+        .args(extra_args)
+        .arg(file)
+        .output()
+        .expect("Failed to run wavecat")
+}
+
 fn run_wavediff_cli(file1: &str, file2: &str, extra_args: &[&str]) -> std::process::Output {
     let bin = env!("CARGO_BIN_EXE_wavediff");
     std::process::Command::new(bin)
@@ -735,5 +744,89 @@ fn test_cli_no_attrs_still_detects_value_diffs() {
         stdout.contains("cyc_plus_one"),
         "--no-attrs stdout should contain value diff: {}",
         stdout
+    );
+}
+
+// ── Enum conflict detection tests ──────────────────────────────────────────
+
+#[test]
+fn test_enum_conflict_errors_on_open() {
+    let name_options = NameOptions::default();
+    let result = wavetools::open_wave_file(
+        std::path::Path::new("tests/data/error/enum_conflict.vcd"),
+        &name_options,
+    );
+    assert!(result.is_err(), "Conflicting enum definitions should error");
+    let err = result.err().unwrap();
+    assert!(
+        err.contains("conflicting enum definitions") && err.contains("$unit::state_t"),
+        "Error should mention the conflicting enum name: {}",
+        err
+    );
+}
+
+#[test]
+fn test_enum_no_conflict_succeeds() {
+    let name_options = NameOptions::default();
+    let result = wavetools::open_wave_file(
+        std::path::Path::new("tests/data/enum_no_conflict.vcd"),
+        &name_options,
+    );
+    assert!(
+        result.is_ok(),
+        "Non-conflicting duplicate enum definitions should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_cli_wavecat_enum_conflict_exits_with_error() {
+    let output = run_wavecat_cli("tests/data/error/enum_conflict.vcd", &["--names"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "wavecat should exit 1 on enum conflict"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("conflicting enum definitions"),
+        "wavecat stderr should report conflict: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_cli_wavediff_enum_conflict_exits_with_error() {
+    let output = run_wavediff_cli(
+        "tests/data/error/enum_conflict.vcd",
+        "tests/data/enum_no_conflict.vcd",
+        &[],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "wavediff should exit 2 on enum conflict"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("conflicting enum definitions"),
+        "wavediff stderr should report conflict: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_non_qualified_duplicate_enums_no_conflict() {
+    // Enum names without "::" are not checked for conflicts — they are local
+    // definitions that can legitimately differ across scopes.
+    let name_options = NameOptions::default();
+    let result = wavetools::open_wave_file(
+        std::path::Path::new("tests/data/enum_attrs.a.vcd"),
+        &name_options,
+    );
+    assert!(
+        result.is_ok(),
+        "Non-qualified enum names should never trigger conflict detection: {:?}",
+        result.err()
     );
 }

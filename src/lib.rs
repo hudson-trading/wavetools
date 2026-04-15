@@ -134,6 +134,8 @@ fn build_hierarchy<R: BufRead + Seek>(
     let mut scope_stack: Vec<String> = Vec::new();
     let mut last_handle: Option<usize> = None;
     let mut enum_tables: HashMap<u64, (String, Vec<(String, String)>)> = HashMap::new();
+    let mut enum_names: EnumNameRegistry = HashMap::new();
+    let mut conflict_error: Option<String> = None;
 
     fst_reader
         .read_hierarchy(|entry| match entry {
@@ -189,6 +191,11 @@ fn build_hierarchy<R: BufRead + Seek>(
                 handle,
                 mapping,
             } => {
+                if conflict_error.is_none() {
+                    if let Err(e) = check_enum_conflict(&mut enum_names, &name, &mapping) {
+                        conflict_error = Some(e);
+                    }
+                }
                 enum_tables.insert(handle, (name, mapping));
             }
             FstHierarchyEntry::EnumTableRef { handle } => {
@@ -201,6 +208,10 @@ fn build_hierarchy<R: BufRead + Seek>(
             _ => {}
         })
         .map_err(|e| format!("Failed to read hierarchy: {}", e))?;
+
+    if let Some(e) = conflict_error {
+        return Err(e);
+    }
 
     Ok(signal_map)
 }
@@ -294,6 +305,43 @@ pub(crate) fn next_vcd_change(vcd_data: &mut VcdData) -> Option<(u64, usize, Str
 /// Each entry stores the table name and its (value_name, encoding) pairs.
 type EnumTableRegistry = HashMap<i64, (String, Vec<(String, String)>)>;
 
+/// Registry of fully qualified enum names (containing "::") to their mappings,
+/// used to detect conflicting definitions from combined trace data.
+type EnumNameRegistry = HashMap<String, Vec<(String, String)>>;
+
+/// Format enum mapping pairs as "k=v k=v ..." for display.
+fn format_mapping(mapping: &[(String, String)]) -> String {
+    mapping.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join(" ")
+}
+
+/// Check whether a fully qualified enum definition conflicts with a previous one.
+/// Returns `Err` if the name was seen before with a different mapping.
+fn check_enum_conflict(
+    enum_names: &mut EnumNameRegistry,
+    name: &str,
+    mapping: &[(String, String)],
+) -> Result<(), String> {
+    if !name.contains("::") {
+        return Ok(());
+    }
+    match enum_names.entry(name.to_string()) {
+        std::collections::hash_map::Entry::Occupied(e) => {
+            if e.get() != mapping {
+                return Err(format!(
+                    "conflicting enum definitions for '{}': [{}] vs [{}]",
+                    name,
+                    format_mapping(e.get()),
+                    format_mapping(mapping),
+                ));
+            }
+        }
+        std::collections::hash_map::Entry::Vacant(e) => {
+            e.insert(mapping.to_vec());
+        }
+    }
+    Ok(())
+}
+
 /// Parse a VCD enum table definition from the name field of a `misc 07` attribute.
 /// Format: `<name> <count> <val1> ... <valN> <enc1> ... <encN>`
 /// Returns the table name and key=value pairs matching the FST enum format.
@@ -319,8 +367,7 @@ fn parse_vcd_enum_table(name: &str) -> Option<(String, Vec<(String, String)>)> {
 
 /// Format an enum table as a string matching the FST enum attr format.
 fn format_enum_attr(name: &str, mapping: &[(String, String)]) -> String {
-    let pairs: Vec<String> = mapping.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
-    format!("enum {}: {}", name, pairs.join(" "))
+    format!("enum {}: {}", name, format_mapping(mapping))
 }
 
 /// Push an attribute string onto the last VarEntry for a given handle.
@@ -340,8 +387,9 @@ fn walk_vcd_items(
     signal_map: &mut SignalMap,
     id_to_idx: &mut HashMap<vcd::IdCode, usize>,
     enum_tables: &mut EnumTableRegistry,
+    enum_names: &mut EnumNameRegistry,
     options: &NameOptions,
-) {
+) -> Result<(), String> {
     let mut last_idx: Option<usize> = None;
     for item in items {
         match item {
@@ -357,8 +405,9 @@ fn walk_vcd_items(
                     signal_map,
                     id_to_idx,
                     enum_tables,
+                    enum_names,
                     options,
-                );
+                )?;
                 last_idx = None;
             }
             vcd::ScopeItem::Var(var) => {
@@ -413,6 +462,7 @@ fn walk_vcd_items(
                     if !name_trimmed.is_empty() {
                         // Enum table definition — register it and attach to current signal
                         if let Some(parsed) = parse_vcd_enum_table(&attr.name) {
+                            check_enum_conflict(enum_names, &parsed.0, &parsed.1)?;
                             enum_tables.insert(attr.arg, parsed.clone());
                             if let Some(idx) = last_idx {
                                 push_attr(signal_map, idx, format_enum_attr(&parsed.0, &parsed.1));
@@ -434,25 +484,28 @@ fn walk_vcd_items(
             _ => {}
         }
     }
+    Ok(())
 }
 
 /// Build hierarchy from a parsed VCD header
 fn build_vcd_hierarchy(
     header: &vcd::Header,
     options: &NameOptions,
-) -> (SignalMap, HashMap<vcd::IdCode, usize>) {
+) -> Result<(SignalMap, HashMap<vcd::IdCode, usize>), String> {
     let mut signal_map: SignalMap = HashMap::new();
     let mut id_to_idx: HashMap<vcd::IdCode, usize> = HashMap::new();
     let mut enum_tables: EnumTableRegistry = HashMap::new();
+    let mut enum_names: EnumNameRegistry = HashMap::new();
     walk_vcd_items(
         &header.items,
         "",
         &mut signal_map,
         &mut id_to_idx,
         &mut enum_tables,
+        &mut enum_names,
         options,
-    );
-    (signal_map, id_to_idx)
+    )?;
+    Ok((signal_map, id_to_idx))
 }
 
 /// Write all signal attributes from the hierarchy to a writer
@@ -510,7 +563,7 @@ fn open_as_vcd(
     let header = parser
         .parse_header()
         .map_err(|e| format!("Failed to parse VCD file {}: {}", path.display(), e))?;
-    let (signal_map, id_to_idx) = build_vcd_hierarchy(&header, options);
+    let (signal_map, id_to_idx) = build_vcd_hierarchy(&header, options)?;
     let vcd_data = VcdData {
         parser,
         id_to_idx,

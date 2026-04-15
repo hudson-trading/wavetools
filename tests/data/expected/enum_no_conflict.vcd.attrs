@@ -1,0 +1,5 @@
+top.clk  wire  1
+top.mode  reg  2
+  enum $unit::state_t: IDLE=00 ACTIVE=01 DONE=10
+top.state  reg  2
+  enum $unit::state_t: IDLE=00 ACTIVE=01 DONE=10
