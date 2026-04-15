@@ -9,8 +9,8 @@
 use clap::Parser;
 use glob::Pattern;
 use wavetools::{
-    names_only, open_wave_file_with_format, write_attrs, write_names, write_signals_wave,
-    NameOptions, SignalMap, SignalOutputOptions, WaveFormat,
+    names_only, open_wave_files, write_attrs, write_names, write_signals_wave_multi, NameOptions,
+    SignalMap, SignalOutputOptions, WaveFormat,
 };
 use std::path::PathBuf;
 use std::process;
@@ -19,16 +19,19 @@ use std::process;
 #[command(name = "wavecat")]
 #[command(about = "Read and display waveform files (FST or VCD)", long_about = "\
 Read and display waveform files (FST or VCD format).
+Multiple files are overlayed (their signals are unioned).
 
 Examples:
   wavecat sim.fst
   wavecat --names --sort sim.vcd
+  wavecat --names --sort clk.vcd counters.vcd
   wavecat --start 100 --end 500 sim.fst
   wavecat --filter '*.clk' --time-pound sim.fst
   wavecat --format vcd dump.dat")]
 struct Args {
-    /// Waveform file to read (FST or VCD)
-    file: PathBuf,
+    /// Waveform file(s) to read (FST or VCD); multiple files are overlayed
+    #[arg(required = true)]
+    file: Vec<PathBuf>,
 
     /// Starting time
     #[arg(short, long)]
@@ -76,6 +79,27 @@ fn parse_format(s: &str) -> Result<WaveFormat, String> {
     }
 }
 
+fn parse_filter_patterns(filter: &[String]) -> Result<Vec<Pattern>, String> {
+    filter
+        .iter()
+        .flat_map(|s| s.split_whitespace())
+        .map(|p| Pattern::new(p).map_err(|e| format!("Invalid glob pattern '{}': {}", p, e)))
+        .collect()
+}
+
+fn apply_filters(signal_map: SignalMap, patterns: &[Pattern]) -> SignalMap {
+    if patterns.is_empty() {
+        return signal_map;
+    }
+    signal_map
+        .into_iter()
+        .filter_map(|(handle, mut info)| {
+            info.vars.retain(|v| patterns.iter().any(|p| p.matches(&v.name)));
+            if info.vars.is_empty() { None } else { Some((handle, info)) }
+        })
+        .collect()
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -89,27 +113,12 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
     let name_options = NameOptions {
         no_range_space: args.no_range_space,
     };
+    let patterns = parse_filter_patterns(&args.filter)?;
 
-    let (mut reader, signal_map) =
-        open_wave_file_with_format(&args.file, &name_options, args.format)?;
+    let paths: Vec<&std::path::Path> = args.file.iter().map(|p| p.as_path()).collect();
+    let (readers, signal_map, offsets) = open_wave_files(&paths, &name_options, args.format)?;
 
-    let patterns: Vec<Pattern> = args.filter
-        .iter()
-        .flat_map(|s| s.split_whitespace())
-        .map(|p| Pattern::new(p).map_err(|e| format!("Invalid glob pattern '{}': {}", p, e)))
-        .collect::<Result<_, _>>()?;
-
-    let signal_map: SignalMap = if !patterns.is_empty() {
-        signal_map
-            .into_iter()
-            .filter_map(|(handle, mut info)| {
-                info.vars.retain(|v| patterns.iter().any(|p| p.matches(&v.name)));
-                if info.vars.is_empty() { None } else { Some((handle, info)) }
-            })
-            .collect()
-    } else {
-        signal_map
-    };
+    let signal_map = apply_filters(signal_map, &patterns);
 
     if args.attrs {
         let mut stdout = std::io::stdout();
@@ -128,9 +137,10 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
         };
 
         let mut stdout = std::io::stdout();
-        write_signals_wave(
+        write_signals_wave_multi(
             &mut stdout,
-            &mut reader,
+            readers,
+            &offsets,
             &names,
             args.start.unwrap_or(0),
             args.end,

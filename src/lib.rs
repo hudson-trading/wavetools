@@ -11,8 +11,11 @@ mod diff;
 #[allow(dead_code, unused_imports, clippy::manual_repeat_n, mismatched_lifetime_syntaxes)]
 mod vcd;
 
-pub use cat::{write_signals_wave, SignalOutputOptions};
-pub use diff::{compare_signal_names, compare_signal_meta, diff_waves, open_and_read_waves};
+pub use cat::{write_signals_wave, write_signals_wave_multi, SignalOutputOptions};
+pub use diff::{
+    compare_signal_meta, compare_signal_names, diff_wave_sets, diff_waves, open_and_read_wave_sets,
+    open_and_read_waves,
+};
 
 use fst_reader::{
     is_fst_file, FstHierarchyEntry, FstReader, FstVarDirection, FstVarType,
@@ -21,9 +24,38 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, Write};
 use std::path::Path;
+use std::sync::mpsc;
 
 /// Mapping from signal handle indices to their fully qualified hierarchical names
 pub type SignalNames = HashMap<usize, Vec<String>>;
+
+/// K-way merge of multiple receivers, forwarding items in time order.
+///
+/// Maintains a head item per receiver and always picks the one with the smallest
+/// time (via `get_time`).  Each item is passed to `on_item`; if that returns an
+/// error the merge stops and the error is propagated.
+pub(crate) fn kway_merge_channels<T>(
+    rxs: &[mpsc::Receiver<T>],
+    get_time: impl Fn(&T) -> u64,
+    mut on_item: impl FnMut(T) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let mut heads: Vec<Option<T>> = rxs.iter().map(|rx| rx.recv().ok()).collect();
+    loop {
+        let min_idx = heads
+            .iter()
+            .enumerate()
+            .filter_map(|(i, opt)| opt.as_ref().map(|c| (i, get_time(c))))
+            .min_by_key(|&(_, t)| t)
+            .map(|(i, _)| i);
+        match min_idx {
+            Some(idx) => {
+                on_item(heads[idx].take().unwrap())?;
+                heads[idx] = rxs[idx].recv().ok();
+            }
+            None => return Ok(()),
+        }
+    }
+}
 
 /// Direction string for signals with no explicit direction
 const IMPLICIT_DIRECTION: &str = "implicit";
@@ -538,6 +570,94 @@ pub fn write_attrs<W: Write>(
         }
     }
     Ok(())
+}
+
+/// Merge multiple SignalMaps into one with remapped handles.
+///
+/// Each file's handles are offset so they don't collide. Returns the merged map
+/// and per-file handle offsets. Errors if any signal name appears in more than one
+/// file (duplicate signal) or if qualified enum definitions conflict across files.
+pub fn merge_signal_maps(
+    maps: &[(&SignalMap, &str)],
+) -> Result<(SignalMap, Vec<usize>), String> {
+    if maps.len() == 1 {
+        return Ok((maps[0].0.clone(), vec![0]));
+    }
+
+    let mut merged = SignalMap::new();
+    let mut offsets = Vec::with_capacity(maps.len());
+    let mut next_handle: usize = 0;
+    let mut seen_names: HashMap<String, &str> = HashMap::new();
+    let mut enum_names: EnumNameRegistry = HashMap::new();
+
+    for &(map, path) in maps {
+        offsets.push(next_handle);
+        for (&handle, info) in map {
+            let new_handle = handle + next_handle;
+            for var in &info.vars {
+                if let Some(&prev_path) = seen_names.get(&var.name) {
+                    return Err(format!(
+                        "duplicate signal '{}' found in both {} and {}",
+                        var.name, prev_path, path,
+                    ));
+                }
+                seen_names.insert(var.name.clone(), path);
+
+                // Check cross-file enum conflicts for qualified names
+                for attr in &var.attrs {
+                    if let Some(rest) = attr.strip_prefix("enum ") {
+                        if let Some(colon_pos) = rest.find(':') {
+                            let enum_name = rest[..colon_pos].trim();
+                            if enum_name.contains("::") {
+                                let mapping: Vec<(String, String)> = rest[colon_pos + 1..]
+                                    .split_whitespace()
+                                    .filter_map(|pair| {
+                                        let (k, v) = pair.split_once('=')?;
+                                        Some((k.to_string(), v.to_string()))
+                                    })
+                                    .collect();
+                                check_enum_conflict(&mut enum_names, enum_name, &mapping)?;
+                            }
+                        }
+                    }
+                }
+            }
+            merged.insert(new_handle, info.clone());
+        }
+        let max_handle = map.keys().max().copied().unwrap_or(0);
+        next_handle += max_handle + 1;
+    }
+
+    Ok((merged, offsets))
+}
+
+/// Open multiple waveform files and merge their hierarchies.
+///
+/// Each file is opened with the given format (or auto-detected if `None`).
+/// Returns readers, the merged SignalMap, and per-file handle offsets.
+/// Errors if any signal name appears in multiple files.
+pub fn open_wave_files(
+    paths: &[&Path],
+    options: &NameOptions,
+    format: Option<WaveFormat>,
+) -> Result<(Vec<WaveReader>, SignalMap, Vec<usize>), String> {
+    let mut readers = Vec::with_capacity(paths.len());
+    let mut maps = Vec::with_capacity(paths.len());
+
+    for &path in paths {
+        let (reader, map) = open_wave_file_with_format(path, options, format)?;
+        readers.push(reader);
+        maps.push(map);
+    }
+
+    let maps_with_paths: Vec<(&SignalMap, &str)> = maps
+        .iter()
+        .zip(paths.iter())
+        .map(|(m, p)| (m, p.to_str().unwrap_or("<unknown>")))
+        .collect();
+
+    let (merged_map, offsets) = merge_signal_maps(&maps_with_paths)?;
+    Ok((readers, merged_map, offsets))
 }
 
 /// Open a file as FST format

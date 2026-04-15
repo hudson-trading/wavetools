@@ -1,0 +1,3 @@
+t.cyc  wire  32
+t.the_sub.cyc  wire  32
+t.the_sub.cyc_plus_one  wire  32

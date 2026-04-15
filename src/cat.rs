@@ -7,6 +7,7 @@
 //------------------------------------------------------------------------------
 
 use std::io::{BufRead, Seek, Write};
+use std::sync::mpsc;
 
 use fst_reader::{FstFilter, FstSignalHandle, FstSignalValue};
 
@@ -153,6 +154,152 @@ pub fn write_signals_wave<W: Write>(
             write_vcd_signals(writer, vcd_data, handle_to_names, start, end, options)
         }
     }
+}
+
+/// A signal change sent through a channel for multi-reader merging
+struct CatChange {
+    time: u64,
+    handle: usize,
+    value: String,
+}
+
+/// Send signal changes from a single WaveReader through a channel.
+/// Sends raw handle indices (offset-adjusted); name resolution happens on the consumer side.
+fn send_cat_changes(
+    mut reader: WaveReader,
+    handle_offset: usize,
+    start: u64,
+    end: Option<u64>,
+    tx: mpsc::Sender<CatChange>,
+) {
+    match &mut reader {
+        WaveReader::Fst(fst_reader) => {
+            let filter = FstFilter {
+                start,
+                end,
+                include: None,
+            };
+            let _ = fst_reader.read_signals(&filter, |time, handle, value| {
+                if time < filter.start {
+                    return;
+                }
+                if let Some(e) = filter.end {
+                    if time > e {
+                        return;
+                    }
+                }
+                let value_str = match value {
+                    FstSignalValue::String(s) => {
+                        std::str::from_utf8(s).unwrap_or("<invalid utf8>").to_string()
+                    }
+                    FstSignalValue::Real(r) => r.to_string(),
+                };
+                let _ = tx.send(CatChange {
+                    time,
+                    handle: handle.get_index() + handle_offset,
+                    value: value_str,
+                });
+            });
+        }
+        WaveReader::Vcd(vcd_data) => {
+            while let Some((time, handle_idx, value_str)) = next_vcd_change(vcd_data) {
+                if time < start {
+                    continue;
+                }
+                if let Some(e) = end {
+                    if time > e {
+                        break;
+                    }
+                }
+                let _ = tx.send(CatChange {
+                    time,
+                    handle: handle_idx + handle_offset,
+                    value: value_str,
+                });
+            }
+        }
+    }
+}
+
+/// Write signal values from multiple WaveReaders, merging their outputs in time order.
+///
+/// Each reader's handles are offset by the corresponding entry in `offsets`.
+/// For a single reader, delegates to `write_signals_wave` for zero overhead.
+pub fn write_signals_wave_multi<W: Write>(
+    writer: &mut W,
+    mut readers: Vec<WaveReader>,
+    offsets: &[usize],
+    handle_to_names: &SignalNames,
+    start: u64,
+    end: Option<u64>,
+    options: &SignalOutputOptions,
+) -> std::io::Result<()> {
+    if readers.len() == 1 && offsets[0] == 0 {
+        return write_signals_wave(
+            writer,
+            &mut readers[0],
+            handle_to_names,
+            start,
+            end,
+            options,
+        );
+    }
+
+    // Spawn a thread per reader, each sending CatChanges to its own channel.
+    // Threads send raw handle+value; name resolution happens here on the consumer side,
+    // avoiding a full handle_to_names clone per thread.
+    let mut rxs = Vec::with_capacity(readers.len());
+    let mut threads = Vec::new();
+
+    for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
+        let (tx, rx) = mpsc::channel();
+        threads.push(std::thread::spawn(move || {
+            send_cat_changes(reader, offset, start, end, tx);
+        }));
+        rxs.push(rx);
+    }
+
+    let mut current_time: Option<u64> = None;
+    let mut batch: Vec<(String, String)> = Vec::new();
+
+    crate::kway_merge_channels(&rxs, |c| c.time, |change| {
+        if options.sort {
+            if let Some(prev_time) = current_time {
+                if prev_time != change.time {
+                    flush_signal_batch(writer, prev_time, &mut batch, options.time_pound)?;
+                }
+            }
+            current_time = Some(change.time);
+        }
+        if let Some(names) = handle_to_names.get(&change.handle) {
+            for name in names {
+                if options.sort {
+                    batch.push((name.clone(), change.value.clone()));
+                } else {
+                    write_signal_line(
+                        writer,
+                        change.time,
+                        name,
+                        &change.value,
+                        options.time_pound,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    })?;
+
+    if options.sort {
+        if let Some(time) = current_time {
+            flush_signal_batch(writer, time, &mut batch, options.time_pound)?;
+        }
+    }
+
+    for t in threads {
+        t.join().unwrap();
+    }
+
+    Ok(())
 }
 
 fn write_vcd_signals<W: Write>(

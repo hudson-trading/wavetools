@@ -148,6 +148,7 @@ struct SignalChange {
 fn read_and_send_signals<R: BufRead + Seek>(
     mut fst_reader: fst_reader::FstReader<R>,
     filter: fst_reader::FstFilter,
+    handle_offset: usize,
     tx: mpsc::Sender<SignalChange>,
 ) {
     let _ = fst_reader.read_signals(&filter, |time, handle, value| {
@@ -161,7 +162,7 @@ fn read_and_send_signals<R: BufRead + Seek>(
         }
         let _ = tx.send(SignalChange {
             time,
-            handle: handle.get_index(),
+            handle: handle.get_index() + handle_offset,
             value: OwnedSignalValue::from_fst_value(value),
         });
     });
@@ -314,9 +315,11 @@ fn compare_signal_channels<W: Write>(
     Ok(has_differences)
 }
 
-/// Send all signal changes from a WaveReader through a channel, applying time filtering
+/// Send all signal changes from a WaveReader through a channel, applying time filtering.
+/// `handle_offset` is added to each handle index (used for merged sets).
 fn send_wave_changes(
     reader: WaveReader,
+    handle_offset: usize,
     start: u64,
     end: Option<u64>,
     tx: mpsc::Sender<SignalChange>,
@@ -328,7 +331,7 @@ fn send_wave_changes(
                 end,
                 include: None,
             };
-            read_and_send_signals(*fst_reader, filter, tx);
+            read_and_send_signals(*fst_reader, filter, handle_offset, tx);
         }
         WaveReader::Vcd(mut vcd_data) => {
             while let Some((time, handle, value_str)) = next_vcd_change(&mut vcd_data) {
@@ -342,11 +345,52 @@ fn send_wave_changes(
                 }
                 let _ = tx.send(SignalChange {
                     time,
-                    handle,
+                    handle: handle + handle_offset,
                     value: OwnedSignalValue::String(value_str.into_bytes()),
                 });
             }
         }
+    }
+}
+
+/// Send changes from multiple WaveReaders through a single channel, merging in time order.
+fn send_merged_wave_changes(
+    readers: Vec<WaveReader>,
+    offsets: &[usize],
+    start: u64,
+    end: Option<u64>,
+    tx: mpsc::Sender<SignalChange>,
+) {
+    if readers.len() == 1 {
+        send_wave_changes(
+            readers.into_iter().next().unwrap(),
+            offsets[0],
+            start,
+            end,
+            tx,
+        );
+        return;
+    }
+
+    // Spawn a thread per reader, each sending to its own channel
+    let mut inner_rxs = Vec::with_capacity(readers.len());
+    let mut threads = Vec::new();
+
+    for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
+        let (inner_tx, inner_rx) = mpsc::channel();
+        threads.push(std::thread::spawn(move || {
+            send_wave_changes(reader, offset, start, end, inner_tx);
+        }));
+        inner_rxs.push(inner_rx);
+    }
+
+    let _ = crate::kway_merge_channels(&inner_rxs, |c| c.time, |change| {
+        let _ = tx.send(change);
+        Ok(())
+    });
+
+    for t in threads {
+        t.join().unwrap();
     }
 }
 
@@ -425,6 +469,37 @@ pub fn diff_waves<W: Write>(
     end: Option<u64>,
     real_epsilon: Option<f64>,
 ) -> std::io::Result<bool> {
+    diff_wave_sets(
+        writer,
+        vec![reader1],
+        signal_map1,
+        &[0],
+        vec![reader2],
+        signal_map2,
+        &[0],
+        start,
+        end,
+        real_epsilon,
+    )
+}
+
+/// Compare two sets of waveform files and write differences.
+///
+/// Each set is a vec of readers with corresponding handle offsets.
+/// Returns `true` if differences were found.
+#[allow(clippy::too_many_arguments)]
+pub fn diff_wave_sets<W: Write>(
+    writer: &mut W,
+    readers1: Vec<WaveReader>,
+    signal_map1: &SignalMap,
+    offsets1: &[usize],
+    readers2: Vec<WaveReader>,
+    signal_map2: &SignalMap,
+    offsets2: &[usize],
+    start: u64,
+    end: Option<u64>,
+    real_epsilon: Option<f64>,
+) -> std::io::Result<bool> {
     let handle_to_names1 = names_only(signal_map1);
     let handle_to_names2 = names_only(signal_map2);
     let handle_mapping = build_handle_mapping(&handle_to_names1, &handle_to_names2);
@@ -432,8 +507,15 @@ pub fn diff_waves<W: Write>(
     let (tx1, rx1) = mpsc::channel();
     let (tx2, rx2) = mpsc::channel();
 
-    let thread1 = std::thread::spawn(move || send_wave_changes(reader1, start, end, tx1));
-    let thread2 = std::thread::spawn(move || send_wave_changes(reader2, start, end, tx2));
+    let offsets1 = offsets1.to_vec();
+    let offsets2 = offsets2.to_vec();
+
+    let thread1 = std::thread::spawn(move || {
+        send_merged_wave_changes(readers1, &offsets1, start, end, tx1);
+    });
+    let thread2 = std::thread::spawn(move || {
+        send_merged_wave_changes(readers2, &offsets2, start, end, tx2);
+    });
 
     let result = compare_signal_channels(
         writer,
@@ -449,4 +531,26 @@ pub fn diff_waves<W: Write>(
     thread2.join().unwrap();
 
     result
+}
+
+/// Open two sets of waveform files and return readers and merged hierarchies
+#[allow(clippy::type_complexity)]
+pub fn open_and_read_wave_sets(
+    paths1: &[&Path],
+    paths2: &[&Path],
+    options: &NameOptions,
+) -> Result<
+    (
+        Vec<WaveReader>,
+        SignalMap,
+        Vec<usize>,
+        Vec<WaveReader>,
+        SignalMap,
+        Vec<usize>,
+    ),
+    String,
+> {
+    let (r1, m1, o1) = crate::open_wave_files(paths1, options, None)?;
+    let (r2, m2, o2) = crate::open_wave_files(paths2, options, None)?;
+    Ok((r1, m1, o1, r2, m2, o2))
 }

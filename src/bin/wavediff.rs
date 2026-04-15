@@ -9,12 +9,16 @@
 use clap::Parser;
 use std::io::Write;
 use std::path::PathBuf;
-use wavetools::{compare_signal_meta, compare_signal_names, diff_waves, open_and_read_waves, NameOptions};
+use wavetools::{
+    compare_signal_meta, compare_signal_names, diff_wave_sets, open_and_read_wave_sets, NameOptions,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "wavediff")]
 #[command(about = "Compare two waveform files (FST or VCD)", long_about = "\
 Compare two waveform files (FST or VCD format) by signal name and value.
+Multiple files can be combined into each side using --set1 and --set2.
+When both --set1 and --set2 are provided, positional FILE arguments are not needed.
 
 Exit codes:
   0  files are identical
@@ -24,13 +28,16 @@ Exit codes:
 Examples:
   wavediff baseline.fst current.fst
   wavediff --start 100 --end 500 sim1.vcd sim2.vcd
-  wavediff --epsilon 0.001 analog1.fst analog2.vcd")]
+  wavediff --epsilon 0.001 analog1.fst analog2.vcd
+  wavediff --set1 extra1.vcd baseline.vcd current.vcd
+  wavediff --set1 clk.vcd --set1 regs.vcd --set2 counter.vcd
+  wavediff --set1 clk.vcd --set1 regs.vcd --set2 clk.vcd --set2 regs_new.vcd baseline.vcd current.vcd")]
 struct Args {
     /// First waveform file to compare (FST or VCD)
-    file1: PathBuf,
+    file1: Option<PathBuf>,
 
     /// Second waveform file to compare (FST or VCD)
-    file2: PathBuf,
+    file2: Option<PathBuf>,
 
     /// Start time for comparison
     #[arg(short = 's', long)]
@@ -47,6 +54,14 @@ struct Args {
     /// Skip metadata comparison (type, size, direction, attributes)
     #[arg(long)]
     no_attrs: bool,
+
+    /// File(s) for set 1; may be specified multiple times
+    #[arg(long, action = clap::ArgAction::Append)]
+    set1: Vec<PathBuf>,
+
+    /// File(s) for set 2; may be specified multiple times
+    #[arg(long, action = clap::ArgAction::Append)]
+    set2: Vec<PathBuf>,
 }
 
 fn main() {
@@ -65,6 +80,49 @@ fn main() {
     }
 }
 
+fn report_name_mismatch(
+    file1: &std::path::Path,
+    only_in_1: &std::collections::HashSet<String>,
+    file2: &std::path::Path,
+    only_in_2: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    if only_in_1.is_empty() && only_in_2.is_empty() {
+        return Ok(());
+    }
+    eprintln!("Signal name mismatch:");
+    let print_sorted = |label: std::path::Display, names: &std::collections::HashSet<String>| {
+        eprintln!("  Only in {}:", label);
+        let mut names: Vec<_> = names.iter().collect();
+        names.sort();
+        for name in names {
+            eprintln!("    {}", name);
+        }
+    };
+    if !only_in_1.is_empty() {
+        print_sorted(file1.display(), only_in_1);
+    }
+    if !only_in_2.is_empty() {
+        print_sorted(file2.display(), only_in_2);
+    }
+    Err("Signal names differ between files".to_string())
+}
+
+fn report_meta_diffs(
+    signal_map1: &wavetools::SignalMap,
+    signal_map2: &wavetools::SignalMap,
+) -> bool {
+    let meta_diffs = compare_signal_meta(signal_map1, signal_map2);
+    if !meta_diffs.is_empty() {
+        let mut stderr = std::io::stderr();
+        for diff in &meta_diffs {
+            let _ = writeln!(stderr, "{}", diff);
+        }
+        true
+    } else {
+        false
+    }
+}
+
 fn run(args: Args) -> Result<bool, String> {
     if let (Some(s), Some(e)) = (args.start, args.end) {
         if s > e {
@@ -77,51 +135,60 @@ fn run(args: Args) -> Result<bool, String> {
         }
     }
 
-    let name_options = NameOptions::default();
-    let (reader1, signal_map1, reader2, signal_map2) =
-        open_and_read_waves(&args.file1, &args.file2, &name_options)?;
+    // Build path lists: positional FILE1/FILE2 go first, then --set1/--set2.
+    // Positional args are required unless both --set1 and --set2 are non-empty.
+    let both_sets = !args.set1.is_empty() && !args.set2.is_empty();
+    let mut set1_paths: Vec<PathBuf> = Vec::new();
+    let mut set2_paths: Vec<PathBuf> = Vec::new();
 
-    let (only_in_1, only_in_2) = compare_signal_names(&signal_map1, &signal_map2);
-
-    if !only_in_1.is_empty() || !only_in_2.is_empty() {
-        eprintln!("Signal name mismatch:");
-        let print_sorted = |label: std::path::Display, names: std::collections::HashSet<String>| {
-            eprintln!("  Only in {}:", label);
-            let mut names: Vec<_> = names.into_iter().collect();
-            names.sort();
-            for name in names {
-                eprintln!("    {}", name);
-            }
-        };
-        if !only_in_1.is_empty() {
-            print_sorted(args.file1.display(), only_in_1);
+    match (&args.file1, &args.file2) {
+        (Some(f1), Some(f2)) => {
+            set1_paths.push(f1.clone());
+            set2_paths.push(f2.clone());
         }
-        if !only_in_2.is_empty() {
-            print_sorted(args.file2.display(), only_in_2);
+        (Some(_), None) => {
+            return Err("FILE2 is required when FILE1 is provided".to_string());
         }
-        return Err("Signal names differ between files".to_string());
+        (None, _) if !both_sets => {
+            return Err(
+                "FILE1 and FILE2 are required unless both --set1 and --set2 are provided"
+                    .to_string(),
+            );
+        }
+        _ => {}
     }
 
-    let mut has_differences = false;
+    set1_paths.extend(args.set1.iter().cloned());
+    set2_paths.extend(args.set2.iter().cloned());
 
+    let name_options = NameOptions::default();
+    let paths1: Vec<&std::path::Path> = set1_paths.iter().map(|p| p.as_path()).collect();
+    let paths2: Vec<&std::path::Path> = set2_paths.iter().map(|p| p.as_path()).collect();
+
+    let (readers1, signal_map1, offsets1, readers2, signal_map2, offsets2) =
+        open_and_read_wave_sets(&paths1, &paths2, &name_options)?;
+
+    // For name-mismatch reporting, use FILE1/FILE2 if given, else first --set file
+    let label1 = args.file1.as_deref().unwrap_or(set1_paths[0].as_path());
+    let label2 = args.file2.as_deref().unwrap_or(set2_paths[0].as_path());
+
+    let (only_in_1, only_in_2) = compare_signal_names(&signal_map1, &signal_map2);
+    report_name_mismatch(label1, &only_in_1, label2, &only_in_2)?;
+
+    let mut has_differences = false;
     if !args.no_attrs {
-        let meta_diffs = compare_signal_meta(&signal_map1, &signal_map2);
-        if !meta_diffs.is_empty() {
-            has_differences = true;
-            let mut stderr = std::io::stderr();
-            for diff in &meta_diffs {
-                let _ = writeln!(stderr, "{}", diff);
-            }
-        }
+        has_differences = report_meta_diffs(&signal_map1, &signal_map2);
     }
 
     let mut stdout = std::io::stdout();
-    let value_diffs = diff_waves(
+    let value_diffs = diff_wave_sets(
         &mut stdout,
-        reader1,
+        readers1,
         &signal_map1,
-        reader2,
+        &offsets1,
+        readers2,
         &signal_map2,
+        &offsets2,
         args.start.unwrap_or(0),
         args.end,
         args.epsilon,

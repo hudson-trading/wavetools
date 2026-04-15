@@ -14,11 +14,13 @@ Binaries are written to `target/release/`.
 ## wavecat
 
 Read and display waveform files. Auto-detects FST or VCD format from file contents.
+Multiple files can be specified and their signals are overlayed (unioned). Each file
+must contribute a disjoint set of signal names.
 
 ### Usage
 
 ```
-wavecat [OPTIONS] <FILE>
+wavecat [OPTIONS] <FILE>...
 ```
 
 ### Options
@@ -110,16 +112,27 @@ Force VCD parsing:
 wavecat --format vcd sim.out
 ```
 
+Overlay multiple files (signals are unioned):
+
+```
+wavecat --names --sort clk.vcd counters.vcd
+```
+
 ## wavediff
 
 Compare two waveform files and report differences. Supports any combination of
-FST and VCD files (e.g. comparing an FST against a VCD).
+FST and VCD files (e.g. comparing an FST against a VCD). Multiple files can be
+combined into each side using `--set1` and `--set2`.
 
 ### Usage
 
 ```
-wavediff [OPTIONS] <FILE1> <FILE2>
+wavediff [OPTIONS] [--set1 <FILE>]... [--set2 <FILE>]... [<FILE1> <FILE2>]
 ```
+
+Positional `FILE1` and `FILE2` arguments are required unless both `--set1` and
+`--set2` are provided. When positional files are given alongside `--set1`/`--set2`,
+they are included in their respective sets.
 
 ### Options
 
@@ -129,6 +142,8 @@ wavediff [OPTIONS] <FILE1> <FILE2>
 | `-e, --end <TIME>` | End time for comparison |
 | `--epsilon <VALUE>` | Epsilon for comparing real-valued signals (absolute tolerance) |
 | `--no-attrs` | Skip metadata comparison (type, size, direction, attributes) |
+| `--set1 <FILE>` | File(s) for set 1; may be specified multiple times |
+| `--set2 <FILE>` | File(s) for set 2; may be specified multiple times |
 
 ### Exit codes
 
@@ -178,6 +193,18 @@ Compare with tolerance for real-valued signals:
 
 ```
 wavediff --epsilon 0.001 golden.fst test.fst
+```
+
+Combine multiple files per side and diff the merged sets:
+
+```
+wavediff --set1 counters.vcd clk.vcd golden.fst
+```
+
+Use only `--set1` and `--set2` (no positional arguments):
+
+```
+wavediff --set1 clk.vcd --set1 regs.vcd --set2 golden.vcd
 ```
 
 Skip metadata comparison (only compare signal values):

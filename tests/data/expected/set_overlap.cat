@@ -1,0 +1,5 @@
+0 t.clk 0
+0 t.extra 00000000
+10 t.clk 1
+10 t.extra 00000001
+20 t.clk 0
