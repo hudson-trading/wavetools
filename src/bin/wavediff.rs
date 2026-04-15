@@ -13,8 +13,16 @@ use wavetools::{
     compare_signal_meta, compare_signal_names, diff_wave_sets, open_and_read_wave_sets, NameOptions,
 };
 
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (rev ",
+    env!("WAVETOOLS_GIT_REV"),
+    ")",
+);
+
 #[derive(Parser, Debug)]
 #[command(name = "wavediff")]
+#[command(version = VERSION)]
 #[command(about = "Compare two waveform files (FST or VCD)", long_about = "\
 Compare two waveform files (FST or VCD format) by signal name and value.
 Multiple files can be combined into each side using --set1 and --set2.

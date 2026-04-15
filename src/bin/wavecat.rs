@@ -15,8 +15,16 @@ use wavetools::{
 use std::path::PathBuf;
 use std::process;
 
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (rev ",
+    env!("WAVETOOLS_GIT_REV"),
+    ")",
+);
+
 #[derive(Parser, Debug)]
 #[command(name = "wavecat")]
+#[command(version = VERSION)]
 #[command(about = "Read and display waveform files (FST or VCD)", long_about = "\
 Read and display waveform files (FST or VCD format).
 Multiple files are overlayed (their signals are unioned).
