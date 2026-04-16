@@ -64,7 +64,7 @@ fn test_vcd_no_attr_signal() {
 #[test]
 fn test_enum_attr_format_vcd() {
     // VCD enum: value names first, then encodings
-    // "state_t 3 IDLE ACTIVE DONE 0 1 2" → IDLE=0 ACTIVE=1 DONE=2
+    // "state_t 3 IDLE ACTIVE DONE 0 1 2" -> IDLE=0 ACTIVE=1 DONE=2
     let attrs = get_signal_attrs("tests/data/enum_attrs.a.vcd", "top.state");
     assert_eq!(attrs.len(), 1);
     assert!(

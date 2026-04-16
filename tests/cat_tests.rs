@@ -30,7 +30,7 @@ fn test_names(path: &Path) -> datatest_stable::Result<()> {
         .join(format!("expected/{}.names", base));
     let expected = std::fs::read_to_string(&expected_path).map_err(|e| {
         format!(
-            "Missing expected file {}: {} — generate it with: wavecat --names --sort {}",
+            "Missing expected file {}: {} -- generate it with: wavecat --names --sort {}",
             expected_path.display(),
             e,
             path.display(),
@@ -59,7 +59,7 @@ fn test_cat(path: &Path) -> datatest_stable::Result<()> {
         .join(format!("expected/{}.cat", base));
     let expected = std::fs::read_to_string(&expected_path).map_err(|e| {
         format!(
-            "Missing expected file {}: {} — generate it with: wavecat --sort {}",
+            "Missing expected file {}: {} -- generate it with: wavecat --sort {}",
             expected_path.display(),
             e,
             path.display(),
@@ -94,7 +94,7 @@ fn test_attrs(path: &Path) -> datatest_stable::Result<()> {
         .join(format!("expected/{}.attrs", file_name));
     let expected = std::fs::read_to_string(&expected_path).map_err(|e| {
         format!(
-            "Missing expected file {}: {} — generate it with: wavecat --attrs --sort {}",
+            "Missing expected file {}: {} -- generate it with: wavecat --attrs --sort {}",
             expected_path.display(),
             e,
             path.display(),

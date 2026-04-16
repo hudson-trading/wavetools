@@ -46,7 +46,7 @@ fn read_signals_with_options(
     String::from_utf8(output).expect("Invalid UTF-8")
 }
 
-// ── Time filtering tests ────────────────────────────────────────────────────
+// -- Time filtering tests ----------------------------------------------------
 
 #[test]
 fn test_signals_start_end_fst() {
@@ -119,7 +119,7 @@ fn test_signals_start_beyond_data() {
     assert!(output.is_empty(), "No output expected when start is beyond all data");
 }
 
-// ── Output option tests ─────────────────────────────────────────────────────
+// -- Output option tests -----------------------------------------------------
 
 #[test]
 fn test_signals_time_pound() {
@@ -155,7 +155,7 @@ fn test_signals_time_pound_vcd() {
     assert_eq!(output, expected);
 }
 
-// ── no_range_space tests ─────────────────────────────────────────────────────
+// -- no_range_space tests ----------------------------------------------------
 
 #[test]
 fn test_names_with_range_default() {
@@ -178,7 +178,7 @@ t.dat[3:0]
     assert_eq!(output, expected);
 }
 
-// ── Format forcing tests ─────────────────────────────────────────────────────
+// -- Format forcing tests ----------------------------------------------------
 
 #[test]
 fn test_format_forcing_fst() {

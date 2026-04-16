@@ -170,7 +170,7 @@ impl NameTree {
             .join(".")
     }
 
-    /// Walk root→leaf by segments, returning the leaf `NameId` if found.
+    /// Walk root->leaf by segments, returning the leaf `NameId` if found.
     pub fn find(&self, segments: &[&str]) -> Option<NameId> {
         let mut cur = self.root();
         for seg in segments {
@@ -457,12 +457,12 @@ pub fn write_names<W: Write>(
     Ok(())
 }
 
-// ── VCD / unified API ────────────────────────────────────────────────────────
+// -- VCD / unified API -------------------------------------------------------
 
 /// A streaming VCD reader that yields signal changes on demand
 ///
 /// Wraps a `vcd::Parser` and the id-to-handle mapping built from the header.
-/// Changes are read lazily — nothing is buffered beyond the parser's own
+/// Changes are read lazily -- nothing is buffered beyond the parser's own
 /// internal line buffer.
 pub struct VcdData {
     parser: vcd::Parser<BufReader<File>>,
@@ -724,7 +724,7 @@ fn walk_vcd_items(
                 if is_enum_table {
                     let name_trimmed = attr.name.trim_matches('"');
                     if !name_trimmed.is_empty() {
-                        // Enum table definition — register it and attach to current signal
+                        // Enum table definition -- register it and attach to current signal
                         if let Some(parsed) = parse_vcd_enum_table(&attr.name) {
                             check_enum_conflict(enum_names, &parsed.0, &parsed.1)?;
                             enum_tables.insert(attr.arg, parsed.clone());
@@ -733,7 +733,7 @@ fn walk_vcd_items(
                             }
                         }
                     } else {
-                        // Enum table reference — resolve from registry
+                        // Enum table reference -- resolve from registry
                         if let Some(idx) = last_idx {
                             if let Some((name, mapping)) = enum_tables.get(&attr.arg) {
                                 push_attr(signal_map, idx, format_enum_attr(name, mapping));
@@ -817,7 +817,7 @@ pub fn merge_signal_maps(
     maps: &[(&SignalMap, &NameTree, &str)],
 ) -> Result<(SignalMap, NameTree, Vec<usize>), String> {
     if maps.len() == 1 {
-        // Single file — clone the map but also rebuild the tree so NameIds
+        // Single file -- clone the map but also rebuild the tree so NameIds
         // remain valid.  For single-file case, NameIds don't need remapping.
         let (map, tree, _) = maps[0];
         return Ok((map.clone(), clone_name_tree(tree), vec![0]));
@@ -1024,7 +1024,7 @@ pub fn open_wave_file_with_format(
             if is_fst_file(&mut buf) {
                 return open_as_fst(buf, path, options);
             }
-            // Not FST — try VCD.
+            // Not FST -- try VCD.
             buf.seek(std::io::SeekFrom::Start(0))
                 .map_err(|e| format!("Failed to seek in {}: {}", path.display(), e))?;
             open_as_vcd(buf, path, options)

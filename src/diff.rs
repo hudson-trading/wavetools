@@ -234,7 +234,7 @@ fn compare_signal_channels<W: Write>(
     // Drive the comparison from file1's batch stream.
     for batch1 in &rx1 {
         // When we move to a new time step, evict buffer entries for file2
-        // handles that were already matched—they won't be needed again.
+        // handles that were already matched -- they won't be needed again.
         if let Some(pt) = prev_time {
             if pt != batch1.time {
                 for &handle in &matched_at_current_time {
@@ -398,7 +398,7 @@ fn send_wave_changes(
 /// Send changes from multiple WaveReaders through a single channel, merging in time order.
 ///
 /// Each inner reader produces same-time `TimeBatch`es. The k-way merge picks the
-/// batch with the smallest time and forwards it directly — no re-batching needed.
+/// batch with the smallest time and forwards it directly -- no re-batching needed.
 fn send_merged_wave_changes(
     readers: Vec<WaveReader>,
     offsets: &[usize],
@@ -461,7 +461,7 @@ pub fn compare_signal_meta(
 ) -> Vec<String> {
     let mut diffs = Vec::new();
 
-    // Build name → VarEntry lookup for both maps
+    // Build name -> VarEntry lookup for both maps
     let entries1: HashMap<String, &crate::VarEntry> = hier1
         .signal_map
         .values()

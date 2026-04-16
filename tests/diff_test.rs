@@ -180,7 +180,7 @@ fn test_value_diff() {
     assert_eq!(output, expected, "Expected exact diff output");
 }
 
-// ── VCD and cross-format tests ────────────────────────────────────────────────
+// -- VCD and cross-format tests -----------------------------------------------
 
 fn run_wave_diff_test(file1: &str, file2: &str) -> (bool, String) {
     let name_options = NameOptions::default();
@@ -253,7 +253,7 @@ fn test_diff_vcd_end_time() {
     assert_eq!(output, expected, "Expected exact diff output for VCD end time diff");
 }
 
-// ── Real epsilon tests ───────────────────────────────────────────────────────
+// -- Real epsilon tests -------------------------------------------------------
 
 fn run_wave_diff_test_with_epsilon(
     file1: &str,
@@ -322,7 +322,7 @@ fn test_diff_real_large_epsilon_no_diff() {
     assert!(!has_diff, "With large epsilon, even far real values should not differ. Output:\n{}", output);
 }
 
-// ── VCD id code aliasing tests ───────────────────────────────────────────────
+// -- VCD id code aliasing tests -----------------------------------------------
 // Reproducer for a vcddiff bug: when one file aliases signals (multiple signals
 // sharing the same VCD id code) and the other assigns unique ids, vcddiff's
 // per-code mapping array overwrites earlier entries, causing "Never found"
@@ -331,8 +331,8 @@ fn test_diff_real_large_epsilon_no_diff() {
 #[test]
 fn test_diff_vcd_aliased_idcodes_no_diff() {
     // idcode_a.vcd: signals a,b (code !) and c,d (code ") share ids across scopes
-    // idcode_b.vcd: every signal gets a unique id (0–4)
-    // Signal names and values are identical — only the id codes differ.
+    // idcode_b.vcd: every signal gets a unique id (0-4)
+    // Signal names and values are identical -- only the id codes differ.
     let (has_diff, output) = run_wave_diff_test(
         "tests/data/idcode_a.vcd",
         "tests/data/idcode_b.vcd",
@@ -349,7 +349,7 @@ fn test_diff_vcd_aliased_idcodes_reverse_no_diff() {
     assert!(!has_diff, "Reversed aliased vs unique VCD id codes should not differ. Output:\n{}", output);
 }
 
-// ── Time range filtering tests ──────────────────────────────────────────────
+// -- Time range filtering tests -----------------------------------------------
 
 fn run_wave_diff_test_with_range(
     file1: &str,
@@ -448,7 +448,7 @@ fn test_diff_vcd_end_skips_late_difference() {
     assert!(!has_diff, "VCD: ending at time 40 should skip the time-50 difference. Output:\n{}", output);
 }
 
-// ── Additional epsilon edge cases ───────────────────────────────────────────
+// -- Additional epsilon edge cases --------------------------------------------
 
 #[test]
 fn test_diff_zero_epsilon() {
@@ -473,7 +473,7 @@ fn test_diff_epsilon_wide_bitvector_no_false_positive() {
     assert!(!has_diff, "Identical wide bit-vectors should not differ with epsilon. Output:\n{}", output);
 }
 
-// ── Metadata comparison tests ──────────────────────────────────────────────
+// -- Metadata comparison tests ------------------------------------------------
 
 #[test]
 fn test_diff_type_mismatch() {
@@ -562,7 +562,7 @@ fn test_diff_cross_format_metadata() {
     );
 }
 
-// ── Attribute comparison tests ──────────────────────────────────────────────
+// -- Attribute comparison tests -----------------------------------------------
 
 #[test]
 fn test_diff_enum_attr_difference() {
@@ -636,7 +636,7 @@ fn test_diff_attr_present_vs_absent() {
 
 #[test]
 fn test_diff_identical_attrs_no_diff() {
-    // Same file compared to itself — no attr differences
+    // Same file compared to itself -- no attr differences
     let name_options = NameOptions::default();
     let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
@@ -653,7 +653,7 @@ fn test_diff_identical_attrs_no_diff() {
 #[test]
 fn test_diff_real_size_normalized_across_formats() {
     // FST stores real signal sizes in bytes (8), VCD in bits (64).
-    // After normalization both should report 64 — no size mismatch.
+    // After normalization both should report 64 -- no size mismatch.
     let name_options = NameOptions::default();
     let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
@@ -671,7 +671,7 @@ fn test_diff_real_size_normalized_across_formats() {
     );
 }
 
-// ── --no-attrs CLI tests ────────────────────────────────────────────────────
+// -- --no-attrs CLI tests -----------------------------------------------------
 
 fn run_wavecat_cli(file: &str, extra_args: &[&str]) -> std::process::Output {
     let bin = env!("CARGO_BIN_EXE_wavecat");
@@ -694,7 +694,7 @@ fn run_wavediff_cli(file1: &str, file2: &str, extra_args: &[&str]) -> std::proce
 
 #[test]
 fn test_cli_attr_diff_nonzero_exit() {
-    // Different attrs, same values — should exit 1
+    // Different attrs, same values -- should exit 1
     let output = run_wavediff_cli(
         "tests/data/enum_attrs.a.vcd",
         "tests/data/enum_attrs.b.vcd",
@@ -708,7 +708,7 @@ fn test_cli_attr_diff_nonzero_exit() {
 
 #[test]
 fn test_cli_no_attrs_ignores_attr_diff() {
-    // Different attrs, same values — --no-attrs should make it exit 0
+    // Different attrs, same values -- --no-attrs should make it exit 0
     let output = run_wavediff_cli(
         "tests/data/enum_attrs.a.vcd",
         "tests/data/enum_attrs.b.vcd",
@@ -724,7 +724,7 @@ fn test_cli_no_attrs_ignores_attr_diff() {
 
 #[test]
 fn test_cli_no_attrs_ignores_missing_attrs() {
-    // Attrs in one file, none in the other — --no-attrs should exit 0
+    // Attrs in one file, none in the other -- --no-attrs should exit 0
     let output = run_wavediff_cli(
         "tests/data/enum_attrs.a.vcd",
         "tests/data/enum_attrs.missing.vcd",
@@ -759,7 +759,7 @@ fn test_cli_no_attrs_still_detects_value_diffs() {
     );
 }
 
-// ── Enum conflict detection tests ──────────────────────────────────────────
+// -- Enum conflict detection tests --------------------------------------------
 
 #[test]
 fn test_enum_conflict_errors_on_open() {
@@ -829,7 +829,7 @@ fn test_cli_wavediff_enum_conflict_exits_with_error() {
 
 #[test]
 fn test_non_qualified_duplicate_enums_no_conflict() {
-    // Enum names without "::" are not checked for conflicts — they are local
+    // Enum names without "::" are not checked for conflicts -- they are local
     // definitions that can legitimately differ across scopes.
     let name_options = NameOptions::default();
     let result = wavetools::open_wave_file(

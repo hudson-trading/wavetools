@@ -133,7 +133,7 @@ jobs:
       - name: Verify tag is on main
         run: |
           if ! git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
-            echo "::error::Tag is not on the main branch — skipping publish"
+            echo "::error::Tag is not on the main branch -- skipping publish"
             exit 1
           fi
 
