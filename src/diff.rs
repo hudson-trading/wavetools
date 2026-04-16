@@ -62,14 +62,20 @@ impl OwnedSignalValue {
                 (a - b).abs() <= eps
             }
             (_, _, Some(eps)) => {
-                // VCD stores reals as strings; try numeric comparison
+                // VCD stores reals as strings; try numeric comparison.
+                // Short-circuit on exact match to avoid float parsing of
+                // non-real values (e.g. large bit-vectors that happen to
+                // parse as floats with precision loss).
+                if self == other {
+                    return true;
+                }
                 if let (Ok(a), Ok(b)) = (
                     self.to_string().parse::<f64>(),
                     other.to_string().parse::<f64>(),
                 ) {
                     (a - b).abs() <= eps
                 } else {
-                    self == other
+                    false
                 }
             }
             _ => self == other,

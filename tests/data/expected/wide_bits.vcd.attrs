@@ -1,0 +1,2 @@
+top.voltage  real  64
+top.wide [0:511]  wire  512

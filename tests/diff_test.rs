@@ -461,6 +461,18 @@ fn test_diff_zero_epsilon() {
     assert!(has_diff, "Zero epsilon should require exact match. Output:\n{}", output);
 }
 
+#[test]
+fn test_diff_epsilon_wide_bitvector_no_false_positive() {
+    // A 512-bit all-1s value parses as a float, but identical bit-vectors
+    // must not be reported as different just because --epsilon is set.
+    let (has_diff, output) = run_wave_diff_test_with_epsilon(
+        "tests/data/wide_bits.vcd",
+        "tests/data/wide_bits.vcd",
+        Some(0.0000001),
+    );
+    assert!(!has_diff, "Identical wide bit-vectors should not differ with epsilon. Output:\n{}", output);
+}
+
 // ── Metadata comparison tests ──────────────────────────────────────────────
 
 #[test]
