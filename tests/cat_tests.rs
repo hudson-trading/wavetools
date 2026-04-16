@@ -38,8 +38,8 @@ fn test_names(path: &Path) -> datatest_stable::Result<()> {
     })?;
 
     let name_options = NameOptions::default();
-    let (_, signal_map) = open_wave_file(path, &name_options)?;
-    let handle_to_names = names_only(&signal_map);
+    let (_, hier) = open_wave_file(path, &name_options)?;
+    let handle_to_names = names_only(&hier.signal_map, &hier.names);
 
     let mut output = Vec::new();
     write_names(&mut output, &handle_to_names, true)?;
@@ -67,8 +67,8 @@ fn test_cat(path: &Path) -> datatest_stable::Result<()> {
     })?;
 
     let name_options = NameOptions::default();
-    let (mut reader, signal_map) = open_wave_file(path, &name_options)?;
-    let handle_to_names = names_only(&signal_map);
+    let (mut reader, hier) = open_wave_file(path, &name_options)?;
+    let handle_to_names = names_only(&hier.signal_map, &hier.names);
 
     let options = SignalOutputOptions {
         sort: true,
@@ -102,10 +102,10 @@ fn test_attrs(path: &Path) -> datatest_stable::Result<()> {
     })?;
 
     let name_options = NameOptions::default();
-    let (_, signal_map) = open_wave_file(path, &name_options)?;
+    let (_, hier) = open_wave_file(path, &name_options)?;
 
     let mut output = Vec::new();
-    write_attrs(&mut output, &signal_map, true)?;
+    write_attrs(&mut output, &hier.signal_map, &hier.names, true)?;
     let actual = String::from_utf8(output)?;
 
     assert_eq!(actual, expected, "attrs mismatch for {}", path.display());

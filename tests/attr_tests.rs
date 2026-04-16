@@ -11,10 +11,10 @@ use wavetools::{compare_signal_meta, open_wave_file, NameOptions};
 
 /// Helper: get signal attrs by signal name from a file
 fn get_signal_attrs(path: &str, signal_name: &str) -> Vec<String> {
-    let (_, signal_map) = open_wave_file(Path::new(path), &NameOptions::default()).unwrap();
-    for info in signal_map.values() {
+    let (_, hier) = open_wave_file(Path::new(path), &NameOptions::default()).unwrap();
+    for info in hier.signal_map.values() {
         for var in &info.vars {
-            if var.name == signal_name {
+            if hier.names.format_path(var.name) == signal_name {
                 return var.attrs.clone();
             }
         }
@@ -84,20 +84,20 @@ fn test_enum_attr_format_vcd() {
 #[test]
 fn test_meta_self_comparison_vcd() {
     // A file compared to itself should have no meta diffs
-    let (_, map) =
+    let (_, hier) =
         open_wave_file(Path::new("tests/data/struct_attrs.vcd"), &NameOptions::default()).unwrap();
-    let diffs = compare_signal_meta(&map, &map);
+    let diffs = compare_signal_meta(&hier, &hier);
     assert!(diffs.is_empty(), "Self-comparison should have no diffs: {:?}", diffs);
 }
 
 #[test]
 fn test_meta_comparison_enum_files() {
     // enum_attrs.a.vcd and enum_attrs.b.vcd should differ in enum attrs
-    let (_, map_a) =
+    let (_, hier_a) =
         open_wave_file(Path::new("tests/data/enum_attrs.a.vcd"), &NameOptions::default()).unwrap();
-    let (_, map_b) =
+    let (_, hier_b) =
         open_wave_file(Path::new("tests/data/enum_attrs.b.vcd"), &NameOptions::default()).unwrap();
-    let diffs = compare_signal_meta(&map_a, &map_b);
+    let diffs = compare_signal_meta(&hier_a, &hier_b);
     // They should differ (enum_attrs.b has different enum mapping)
     assert!(!diffs.is_empty(), "Expected meta diffs between a and b enum files");
 }

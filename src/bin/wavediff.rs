@@ -10,7 +10,8 @@ use clap::Parser;
 use std::io::Write;
 use std::path::PathBuf;
 use wavetools::{
-    compare_signal_meta, compare_signal_names, diff_wave_sets, open_and_read_wave_sets, NameOptions,
+    compare_signal_meta, compare_signal_names, diff_wave_sets, open_and_read_wave_sets,
+    NameOptions, WaveHierarchy,
 };
 
 const VERSION: &str = concat!(
@@ -116,10 +117,10 @@ fn report_name_mismatch(
 }
 
 fn report_meta_diffs(
-    signal_map1: &wavetools::SignalMap,
-    signal_map2: &wavetools::SignalMap,
+    hier1: &WaveHierarchy,
+    hier2: &WaveHierarchy,
 ) -> bool {
-    let meta_diffs = compare_signal_meta(signal_map1, signal_map2);
+    let meta_diffs = compare_signal_meta(hier1, hier2);
     if !meta_diffs.is_empty() {
         let mut stderr = std::io::stderr();
         for diff in &meta_diffs {
@@ -173,29 +174,29 @@ fn run(args: Args) -> Result<bool, String> {
     let paths1: Vec<&std::path::Path> = set1_paths.iter().map(|p| p.as_path()).collect();
     let paths2: Vec<&std::path::Path> = set2_paths.iter().map(|p| p.as_path()).collect();
 
-    let (readers1, signal_map1, offsets1, readers2, signal_map2, offsets2) =
+    let (readers1, hier1, offsets1, readers2, hier2, offsets2) =
         open_and_read_wave_sets(&paths1, &paths2, &name_options)?;
 
     // For name-mismatch reporting, use FILE1/FILE2 if given, else first --set file
     let label1 = args.file1.as_deref().unwrap_or(set1_paths[0].as_path());
     let label2 = args.file2.as_deref().unwrap_or(set2_paths[0].as_path());
 
-    let (only_in_1, only_in_2) = compare_signal_names(&signal_map1, &signal_map2);
+    let (only_in_1, only_in_2) = compare_signal_names(&hier1, &hier2);
     report_name_mismatch(label1, &only_in_1, label2, &only_in_2)?;
 
     let mut has_differences = false;
     if !args.no_attrs {
-        has_differences = report_meta_diffs(&signal_map1, &signal_map2);
+        has_differences = report_meta_diffs(&hier1, &hier2);
     }
 
     let mut stdout = std::io::stdout();
     let value_diffs = diff_wave_sets(
         &mut stdout,
         readers1,
-        &signal_map1,
+        &hier1,
         &offsets1,
         readers2,
-        &signal_map2,
+        &hier2,
         &offsets2,
         args.start.unwrap_or(0),
         args.end,

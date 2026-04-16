@@ -14,7 +14,7 @@ use std::sync::mpsc;
 
 use fst_reader::{FstFilter, FstSignalValue};
 
-use crate::{names_only, next_vcd_change, NameOptions, SignalMap, SignalNames, WaveReader};
+use crate::{names_only, next_vcd_change, NameOptions, NameTree, SignalMap, SignalNames, WaveHierarchy, WaveReader};
 
 /// Owned version of `FstSignalValue` for sending through channels
 #[derive(Debug, Clone)]
@@ -85,16 +85,18 @@ impl OwnedSignalValue {
 
 /// Compare signal names between two waveform files and return the differences
 pub fn compare_signal_names(
-    map1: &SignalMap,
-    map2: &SignalMap,
+    hier1: &WaveHierarchy,
+    hier2: &WaveHierarchy,
 ) -> (HashSet<String>, HashSet<String>) {
-    let set1: HashSet<String> = map1
+    let set1: HashSet<String> = hier1
+        .signal_map
         .values()
-        .flat_map(|info| info.vars.iter().map(|v| v.name.clone()))
+        .flat_map(|info| info.vars.iter().map(|v| hier1.names.format_path(v.name)))
         .collect();
-    let set2: HashSet<String> = map2
+    let set2: HashSet<String> = hier2
+        .signal_map
         .values()
-        .flat_map(|info| info.vars.iter().map(|v| v.name.clone()))
+        .flat_map(|info| info.vars.iter().map(|v| hier2.names.format_path(v.name)))
         .collect();
 
     let only_in_1: HashSet<String> = set1.difference(&set2).cloned().collect();
@@ -103,35 +105,39 @@ pub fn compare_signal_names(
     (only_in_1, only_in_2)
 }
 
-/// Build mapping from signal names to handle indices
-fn build_name_to_handles(handle_to_names: &SignalNames) -> HashMap<String, Vec<usize>> {
-    let mut name_to_handles: HashMap<String, Vec<usize>> = HashMap::new();
-
-    for (&handle, names) in handle_to_names.iter() {
-        for name in names {
-            name_to_handles
-                .entry(name.clone())
-                .or_default()
-                .push(handle);
+/// Build a reverse index from NameId to the handles that use it.
+fn build_name_id_to_handles(map: &SignalMap) -> HashMap<crate::NameId, Vec<usize>> {
+    let mut result: HashMap<crate::NameId, Vec<usize>> = HashMap::new();
+    for (&handle, info) in map {
+        for var in &info.vars {
+            result.entry(var.name).or_default().push(handle);
         }
     }
-
-    name_to_handles
+    result
 }
 
-/// Build mapping from handles in file A to handles in file B based on signal names
+/// Build mapping from handles in file A to handles in file B using tree-based lookup.
+///
+/// For each signal in A, walks A's tree to get segments, then looks up those
+/// segments in B's tree to find the matching NameId. This avoids materializing
+/// flat name strings as HashMap keys.
 fn build_handle_mapping(
-    names_a: &SignalNames,
-    names_b: &SignalNames,
+    map_a: &SignalMap,
+    tree_a: &NameTree,
+    map_b: &SignalMap,
+    tree_b: &NameTree,
 ) -> HashMap<usize, Vec<usize>> {
-    let name_to_handles_b = build_name_to_handles(names_b);
+    let name_id_to_handles_b = build_name_id_to_handles(map_b);
     let mut handle_mapping: HashMap<usize, Vec<usize>> = HashMap::new();
 
-    for (&handle_a, names) in names_a.iter() {
+    for (&handle_a, info) in map_a {
         let mut handles_b = Vec::new();
-        for name in names {
-            if let Some(b_handles) = name_to_handles_b.get(name) {
-                handles_b.extend(b_handles);
+        for var in &info.vars {
+            let segments = tree_a.segments(var.name);
+            if let Some(b_name_id) = tree_b.find(&segments) {
+                if let Some(b_handles) = name_id_to_handles_b.get(&b_name_id) {
+                    handles_b.extend(b_handles);
+                }
             }
         }
         if !handles_b.is_empty() {
@@ -404,27 +410,29 @@ fn send_merged_wave_changes(
 /// Returns a list of human-readable difference strings.
 /// Direction is only compared if both sides have an explicit (non-implicit) direction.
 pub fn compare_signal_meta(
-    map1: &SignalMap,
-    map2: &SignalMap,
+    hier1: &WaveHierarchy,
+    hier2: &WaveHierarchy,
 ) -> Vec<String> {
     let mut diffs = Vec::new();
 
     // Build name → VarEntry lookup for both maps
-    let entries1: HashMap<&str, &crate::VarEntry> = map1
+    let entries1: HashMap<String, &crate::VarEntry> = hier1
+        .signal_map
         .values()
-        .flat_map(|info| info.vars.iter().map(|v| (v.name.as_str(), v)))
+        .flat_map(|info| info.vars.iter().map(|v| (hier1.names.format_path(v.name), v)))
         .collect();
-    let entries2: HashMap<&str, &crate::VarEntry> = map2
+    let entries2: HashMap<String, &crate::VarEntry> = hier2
+        .signal_map
         .values()
-        .flat_map(|info| info.vars.iter().map(|v| (v.name.as_str(), v)))
+        .flat_map(|info| info.vars.iter().map(|v| (hier2.names.format_path(v.name), v)))
         .collect();
 
-    let mut common: Vec<&&str> = entries1.keys().filter(|n| entries2.contains_key(**n)).collect();
+    let mut common: Vec<&String> = entries1.keys().filter(|n| entries2.contains_key(*n)).collect();
     common.sort();
 
     for name in common {
-        let v1 = entries1[*name];
-        let v2 = entries2[*name];
+        let v1 = entries1[name];
+        let v2 = entries2[name];
         if v1.meta.var_type != v2.meta.var_type {
             diffs.push(format!("{}: type {} != {}", name, v1.meta.var_type, v2.meta.var_type));
         }
@@ -455,10 +463,10 @@ pub fn open_and_read_waves<P1: AsRef<Path>, P2: AsRef<Path>>(
     path1: P1,
     path2: P2,
     options: &NameOptions,
-) -> Result<(WaveReader, SignalMap, WaveReader, SignalMap), String> {
-    let (r1, m1) = crate::open_wave_file(path1.as_ref(), options)?;
-    let (r2, m2) = crate::open_wave_file(path2.as_ref(), options)?;
-    Ok((r1, m1, r2, m2))
+) -> Result<(WaveReader, WaveHierarchy, WaveReader, WaveHierarchy), String> {
+    let (r1, h1) = crate::open_wave_file(path1.as_ref(), options)?;
+    let (r2, h2) = crate::open_wave_file(path2.as_ref(), options)?;
+    Ok((r1, h1, r2, h2))
 }
 
 /// Compare two waveform files (any mix of FST/VCD) and write differences
@@ -468,9 +476,9 @@ pub fn open_and_read_waves<P1: AsRef<Path>, P2: AsRef<Path>>(
 pub fn diff_waves<W: Write>(
     writer: &mut W,
     reader1: WaveReader,
-    signal_map1: &SignalMap,
+    hier1: &WaveHierarchy,
     reader2: WaveReader,
-    signal_map2: &SignalMap,
+    hier2: &WaveHierarchy,
     start: u64,
     end: Option<u64>,
     real_epsilon: Option<f64>,
@@ -478,10 +486,10 @@ pub fn diff_waves<W: Write>(
     diff_wave_sets(
         writer,
         vec![reader1],
-        signal_map1,
+        hier1,
         &[0],
         vec![reader2],
-        signal_map2,
+        hier2,
         &[0],
         start,
         end,
@@ -497,18 +505,23 @@ pub fn diff_waves<W: Write>(
 pub fn diff_wave_sets<W: Write>(
     writer: &mut W,
     readers1: Vec<WaveReader>,
-    signal_map1: &SignalMap,
+    hier1: &WaveHierarchy,
     offsets1: &[usize],
     readers2: Vec<WaveReader>,
-    signal_map2: &SignalMap,
+    hier2: &WaveHierarchy,
     offsets2: &[usize],
     start: u64,
     end: Option<u64>,
     real_epsilon: Option<f64>,
 ) -> std::io::Result<bool> {
-    let handle_to_names1 = names_only(signal_map1);
-    let handle_to_names2 = names_only(signal_map2);
-    let handle_mapping = build_handle_mapping(&handle_to_names1, &handle_to_names2);
+    let handle_to_names1 = names_only(&hier1.signal_map, &hier1.names);
+    let handle_to_names2 = names_only(&hier2.signal_map, &hier2.names);
+    let handle_mapping = build_handle_mapping(
+        &hier1.signal_map,
+        &hier1.names,
+        &hier2.signal_map,
+        &hier2.names,
+    );
 
     let (tx1, rx1) = mpsc::channel();
     let (tx2, rx2) = mpsc::channel();
@@ -548,15 +561,15 @@ pub fn open_and_read_wave_sets(
 ) -> Result<
     (
         Vec<WaveReader>,
-        SignalMap,
+        WaveHierarchy,
         Vec<usize>,
         Vec<WaveReader>,
-        SignalMap,
+        WaveHierarchy,
         Vec<usize>,
     ),
     String,
 > {
-    let (r1, m1, o1) = crate::open_wave_files(paths1, options, None)?;
-    let (r2, m2, o2) = crate::open_wave_files(paths2, options, None)?;
-    Ok((r1, m1, o1, r2, m2, o2))
+    let (r1, h1, o1) = crate::open_wave_files(paths1, options, None)?;
+    let (r2, h2, o2) = crate::open_wave_files(paths2, options, None)?;
+    Ok((r1, h1, o1, r2, h2, o2))
 }

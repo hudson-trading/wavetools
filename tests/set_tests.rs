@@ -10,11 +10,11 @@ use std::path::Path;
 use wavetools::{
     merge_signal_maps, names_only, open_wave_file, open_wave_files, write_signals_wave_multi,
     diff_wave_sets, compare_signal_names, compare_signal_meta,
-    NameOptions, SignalOutputOptions,
+    NameOptions, SignalOutputOptions, WaveHierarchy,
 };
 
-fn sorted_names(map: &wavetools::SignalMap) -> Vec<String> {
-    let handle_names = names_only(map);
+fn sorted_names(hier: &WaveHierarchy) -> Vec<String> {
+    let handle_names = names_only(&hier.signal_map, &hier.names);
     let mut names: Vec<String> = handle_names.values().flatten().cloned().collect();
     names.sort();
     names.dedup();
@@ -25,14 +25,15 @@ fn sorted_names(map: &wavetools::SignalMap) -> Vec<String> {
 
 #[test]
 fn test_merge_disjoint_signals() {
-    let (_, map_clk) = open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
-    let (_, map_counter) = open_wave_file(Path::new("tests/data/set_counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_clk) = open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_counter) = open_wave_file(Path::new("tests/data/set_counter.vcd"), &NameOptions::default()).unwrap();
 
-    let (merged, offsets) = merge_signal_maps(&[
-        (&map_clk, "set_clk.vcd"),
-        (&map_counter, "set_counter.vcd"),
+    let (merged_map, merged_tree, offsets) = merge_signal_maps(&[
+        (&hier_clk.signal_map, &hier_clk.names, "set_clk.vcd"),
+        (&hier_counter.signal_map, &hier_counter.names, "set_counter.vcd"),
     ]).unwrap();
 
+    let merged = WaveHierarchy { signal_map: merged_map, names: merged_tree };
     let names = sorted_names(&merged);
     assert_eq!(names, vec![
         "t.clk",
@@ -47,12 +48,12 @@ fn test_merge_disjoint_signals() {
 
 #[test]
 fn test_merge_duplicate_signal_error() {
-    let (_, map_clk) = open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
-    let (_, map_overlap) = open_wave_file(Path::new("tests/data/set_overlap.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_clk) = open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_overlap) = open_wave_file(Path::new("tests/data/set_overlap.vcd"), &NameOptions::default()).unwrap();
 
     let result = merge_signal_maps(&[
-        (&map_clk, "set_clk.vcd"),
-        (&map_overlap, "set_overlap.vcd"),
+        (&hier_clk.signal_map, &hier_clk.names, "set_clk.vcd"),
+        (&hier_overlap.signal_map, &hier_overlap.names, "set_overlap.vcd"),
     ]);
 
     assert!(result.is_err());
@@ -63,34 +64,35 @@ fn test_merge_duplicate_signal_error() {
 
 #[test]
 fn test_merge_single_file() {
-    let (_, map_single) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_single) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
 
-    let (merged, offsets) = merge_signal_maps(&[
-        (&map_single, "counter.vcd"),
+    let (merged_map, merged_tree, offsets) = merge_signal_maps(&[
+        (&hier_single.signal_map, &hier_single.names, "counter.vcd"),
     ]).unwrap();
 
+    let merged = WaveHierarchy { signal_map: merged_map, names: merged_tree };
     assert_eq!(offsets, vec![0]);
-    assert_eq!(sorted_names(&merged), sorted_names(&map_single));
+    assert_eq!(sorted_names(&merged), sorted_names(&hier_single));
 }
 
 #[test]
 fn test_merge_handle_offsets() {
-    let (_, map_clk) = open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
-    let (_, map_counter) = open_wave_file(Path::new("tests/data/set_counter.vcd"), &NameOptions::default()).unwrap();
-    let (_, map_overlap) = open_wave_file(Path::new("tests/data/set_counter_modified.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_clk) = open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_counter) = open_wave_file(Path::new("tests/data/set_counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_overlap) = open_wave_file(Path::new("tests/data/set_counter_modified.vcd"), &NameOptions::default()).unwrap();
 
     // counter and counter_modified share signal names, so merge must fail
     let result = merge_signal_maps(&[
-        (&map_clk, "a"),
-        (&map_counter, "b"),
-        (&map_overlap, "c"),
+        (&hier_clk.signal_map, &hier_clk.names, "a"),
+        (&hier_counter.signal_map, &hier_counter.names, "b"),
+        (&hier_overlap.signal_map, &hier_overlap.names, "c"),
     ]);
     assert!(result.is_err());
 
     // Two disjoint files: verify offsets
-    let (_, offsets) = merge_signal_maps(&[
-        (&map_clk, "a"),
-        (&map_counter, "b"),
+    let (_, _, offsets) = merge_signal_maps(&[
+        (&hier_clk.signal_map, &hier_clk.names, "a"),
+        (&hier_counter.signal_map, &hier_counter.names, "b"),
     ]).unwrap();
     assert_eq!(offsets[0], 0);
     assert!(offsets[1] > 0, "second file should have non-zero offset");
@@ -104,10 +106,10 @@ fn test_open_wave_files_disjoint() {
         Path::new("tests/data/set_clk.vcd"),
         Path::new("tests/data/set_counter.vcd"),
     ];
-    let (readers, map, offsets) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
+    let (readers, hier, offsets) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
     assert_eq!(readers.len(), 2);
     assert_eq!(offsets.len(), 2);
-    assert_eq!(sorted_names(&map), vec![
+    assert_eq!(sorted_names(&hier), vec![
         "t.clk",
         "t.cyc",
         "t.the_sub.cyc",
@@ -137,11 +139,11 @@ fn test_cat_multi_names_match_single() {
         Path::new("tests/data/set_clk.vcd"),
         Path::new("tests/data/set_counter.vcd"),
     ];
-    let (_, multi_map, _) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
+    let (_, multi_hier, _) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
 
-    let (_, single_map) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, single_hier) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
 
-    assert_eq!(sorted_names(&multi_map), sorted_names(&single_map));
+    assert_eq!(sorted_names(&multi_hier), sorted_names(&single_hier));
 }
 
 #[test]
@@ -151,8 +153,8 @@ fn test_cat_multi_signals_sorted() {
         Path::new("tests/data/set_clk.vcd"),
         Path::new("tests/data/set_counter.vcd"),
     ];
-    let (readers, map, offsets) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
-    let names = names_only(&map);
+    let (readers, hier, offsets) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
+    let names = names_only(&hier.signal_map, &hier.names);
     let options = SignalOutputOptions {
         time_pound: false,
         sort: true,
@@ -161,9 +163,9 @@ fn test_cat_multi_signals_sorted() {
     write_signals_wave_multi(&mut multi_output, readers, &offsets, &names, 0, None, &options)
         .unwrap();
 
-    let (mut single_reader, single_map) =
+    let (mut single_reader, single_hier) =
         open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
-    let single_names = names_only(&single_map);
+    let single_names = names_only(&single_hier.signal_map, &single_hier.names);
     let mut single_output = Vec::new();
     wavetools::write_signals_wave(
         &mut single_output,
@@ -190,16 +192,16 @@ fn test_diff_set_vs_single_identical() {
         Path::new("tests/data/set_clk.vcd"),
         Path::new("tests/data/set_counter.vcd"),
     ];
-    let (readers1, map1, offsets1) = open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
+    let (readers1, hier1, offsets1) = open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
 
     let paths2: Vec<&Path> = vec![Path::new("tests/data/counter.vcd")];
-    let (readers2, map2, offsets2) = open_wave_files(&paths2, &NameOptions::default(), None).unwrap();
+    let (readers2, hier2, offsets2) = open_wave_files(&paths2, &NameOptions::default(), None).unwrap();
 
     let mut output = Vec::new();
     let has_diff = diff_wave_sets(
         &mut output,
-        readers1, &map1, &offsets1,
-        readers2, &map2, &offsets2,
+        readers1, &hier1, &offsets1,
+        readers2, &hier2, &offsets2,
         0, None, None,
     ).unwrap();
 
@@ -213,16 +215,16 @@ fn test_diff_set_value_difference() {
         Path::new("tests/data/set_clk.vcd"),
         Path::new("tests/data/set_counter_modified.vcd"),
     ];
-    let (readers1, map1, offsets1) = open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
+    let (readers1, hier1, offsets1) = open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
 
     let paths2: Vec<&Path> = vec![Path::new("tests/data/counter.vcd")];
-    let (readers2, map2, offsets2) = open_wave_files(&paths2, &NameOptions::default(), None).unwrap();
+    let (readers2, hier2, offsets2) = open_wave_files(&paths2, &NameOptions::default(), None).unwrap();
 
     let mut output = Vec::new();
     let has_diff = diff_wave_sets(
         &mut output,
-        readers1, &map1, &offsets1,
-        readers2, &map2, &offsets2,
+        readers1, &hier1, &offsets1,
+        readers2, &hier2, &offsets2,
         0, None, None,
     ).unwrap();
 
@@ -238,11 +240,11 @@ fn test_diff_set_signal_name_comparison() {
         Path::new("tests/data/set_clk.vcd"),
         Path::new("tests/data/set_counter.vcd"),
     ];
-    let (_, map1, _) = open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
+    let (_, hier1, _) = open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
 
-    let (_, map2) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier2) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
 
-    let (only_in_1, only_in_2) = compare_signal_names(&map1, &map2);
+    let (only_in_1, only_in_2) = compare_signal_names(&hier1, &hier2);
     assert!(only_in_1.is_empty(), "Unexpected signals only in set: {:?}", only_in_1);
     assert!(only_in_2.is_empty(), "Unexpected signals only in single: {:?}", only_in_2);
 }
@@ -254,10 +256,10 @@ fn test_diff_set_meta_comparison() {
         Path::new("tests/data/set_clk.vcd"),
         Path::new("tests/data/set_counter.vcd"),
     ];
-    let (_, map1, _) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
-    let (_, map2) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier1, _) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
+    let (_, hier2) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
 
-    let diffs = compare_signal_meta(&map1, &map2);
+    let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(diffs.is_empty(), "Expected no meta diffs, got: {:?}", diffs);
 }
 

@@ -30,6 +30,170 @@ use std::sync::mpsc;
 /// Mapping from signal handle indices to their fully qualified hierarchical names
 pub type SignalNames = HashMap<usize, Vec<String>>;
 
+/// Index into a NameTree arena.
+pub type NameId = u32;
+
+/// A single node in the hierarchical name tree.
+#[derive(Debug)]
+struct NameNode {
+    segment: String,
+    parent: Option<NameId>,
+    children: HashMap<String, NameId>,
+}
+
+/// Returns true if `s` is a valid SystemVerilog simple identifier.
+/// IEEE 1800 rules:
+/// 1. Must be non-empty.
+/// 2. All characters must be letters, digits, `$`, or `_`.
+/// 3. First character must not be a digit or `$`.
+fn is_simple_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// Split a trailing VCD range suffix (e.g., ` [31:0]`, `[5]`) from the base name.
+/// Returns `(base, range_suffix)` where `range_suffix` may or may not include a
+/// leading space, or `(s, "")` if no range is found.
+///
+/// Only recognizes numeric ranges (`[digits]` or `[digits:digits]`) to avoid
+/// splitting signal names that contain literal brackets.
+fn split_range_suffix(s: &str) -> (&str, &str) {
+    if !s.ends_with(']') {
+        return (s, "");
+    }
+    // Try " [" first (standard format), then bare "[" (no_range_space format)
+    let split_pos = s.rfind(" [").or_else(|| {
+        let pos = s.rfind('[')?;
+        if pos > 0 { Some(pos) } else { None }
+    });
+    if let Some(pos) = split_pos {
+        // Extract bracket content and verify it's a numeric range
+        let bracket_start = s[pos..].find('[').unwrap() + pos + 1;
+        let content = &s[bracket_start..s.len() - 1];
+        let is_numeric_range = !content.is_empty()
+            && content.chars().all(|c| c.is_ascii_digit() || c == ':');
+        if is_numeric_range {
+            return (&s[..pos], &s[pos..]);
+        }
+    }
+    (s, "")
+}
+
+/// Format a single segment for display, escaping non-simple identifiers
+/// per the SystemVerilog `%m` convention (leading `\`, trailing space).
+///
+/// Range suffixes (e.g., ` [31:0]`) are not part of the identifier and are
+/// preserved as-is.  Only the base name is tested for escaping.
+fn format_segment(s: &str) -> String {
+    let (base, range_suffix) = split_range_suffix(s);
+    if is_simple_identifier(base) {
+        s.to_string()
+    } else if range_suffix.is_empty() {
+        format!("\\{} ", base)
+    } else {
+        // The trailing space of the escaped identifier replaces the original
+        // space before the range bracket: "\a0.cyc [31:0]"
+        format!("\\{} {}", base, &range_suffix[1..])
+    }
+}
+
+/// Arena-based trie for hierarchical signal names.
+///
+/// Each node holds one path segment (scope or variable name). Signals share
+/// prefix nodes, so `VarEntry` stores a compact `NameId` (u32) instead of a
+/// full `String`.
+#[derive(Debug)]
+pub struct NameTree {
+    nodes: Vec<NameNode>,
+}
+
+impl NameTree {
+    /// Create a new tree with a root node.
+    pub fn new() -> Self {
+        NameTree {
+            nodes: vec![NameNode {
+                segment: String::new(),
+                parent: None,
+                children: HashMap::new(),
+            }],
+        }
+    }
+
+    /// Return the root node id.
+    pub fn root(&self) -> NameId {
+        0
+    }
+
+    /// Intern a child segment under `parent`, returning the child's `NameId`.
+    /// If the child already exists, returns the existing id.
+    pub fn intern(&mut self, parent: NameId, segment: &str) -> NameId {
+        if let Some(&id) = self.nodes[parent as usize].children.get(segment) {
+            return id;
+        }
+        let id = self.nodes.len() as NameId;
+        self.nodes.push(NameNode {
+            segment: segment.to_string(),
+            parent: Some(parent),
+            children: HashMap::new(),
+        });
+        self.nodes[parent as usize]
+            .children
+            .insert(segment.to_string(), id);
+        id
+    }
+
+    /// Collect path segments from root to `leaf` (excluding the root).
+    pub fn segments(&self, leaf: NameId) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut cur = leaf;
+        while let Some(parent) = self.nodes[cur as usize].parent {
+            parts.push(self.nodes[cur as usize].segment.as_str());
+            cur = parent;
+        }
+        parts.reverse();
+        parts
+    }
+
+    /// Format the full hierarchical path for display.
+    ///
+    /// Joins segments with `.`, escaping any non-simple identifiers per
+    /// the SystemVerilog `%m` convention (`\name `).
+    pub fn format_path(&self, leaf: NameId) -> String {
+        let segments = self.segments(leaf);
+        segments
+            .iter()
+            .map(|s| format_segment(s))
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+
+    /// Walk root→leaf by segments, returning the leaf `NameId` if found.
+    pub fn find(&self, segments: &[&str]) -> Option<NameId> {
+        let mut cur = self.root();
+        for seg in segments {
+            cur = *self.nodes[cur as usize].children.get(*seg)?;
+        }
+        Some(cur)
+    }
+}
+
+impl Default for NameTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Bundles a `SignalMap` with its associated `NameTree`.
+#[derive(Debug)]
+pub struct WaveHierarchy {
+    pub signal_map: SignalMap,
+    pub names: NameTree,
+}
+
 /// K-way merge of multiple receivers, forwarding items in time order.
 ///
 /// Maintains a head item per receiver and always picks the one with the smallest
@@ -77,7 +241,7 @@ pub struct VarMeta {
 /// they can have different declared types.
 #[derive(Debug, Clone)]
 pub struct VarEntry {
-    pub name: String,
+    pub name: NameId,
     pub meta: VarMeta,
     /// Formatted attribute strings (enum tables, array types, etc.)
     pub attrs: Vec<String>,
@@ -94,9 +258,14 @@ pub struct SignalInfo {
 pub type SignalMap = HashMap<usize, SignalInfo>;
 
 /// Extract just the names from a SignalMap, for use in streaming code
-pub fn names_only(map: &SignalMap) -> SignalNames {
+pub fn names_only(map: &SignalMap, tree: &NameTree) -> SignalNames {
     map.iter()
-        .map(|(&k, info)| (k, info.vars.iter().map(|v| v.name.clone()).collect()))
+        .map(|(&k, info)| {
+            (
+                k,
+                info.vars.iter().map(|v| tree.format_path(v.name)).collect(),
+            )
+        })
         .collect()
 }
 
@@ -158,13 +327,14 @@ fn fst_direction_str(d: FstVarDirection) -> &'static str {
     }
 }
 
-/// Build a SignalMap from an FST hierarchy
+/// Build a SignalMap and NameTree from an FST hierarchy
 fn build_hierarchy<R: BufRead + Seek>(
     fst_reader: &mut fst_reader::FstReader<R>,
     options: &NameOptions,
-) -> Result<SignalMap, String> {
+) -> Result<(SignalMap, NameTree), String> {
     let mut signal_map: SignalMap = HashMap::new();
-    let mut scope_stack: Vec<String> = Vec::new();
+    let mut tree = NameTree::new();
+    let mut scope_id: NameId = tree.root();
     let mut last_handle: Option<usize> = None;
     let mut enum_tables: HashMap<u64, (String, Vec<(String, String)>)> = HashMap::new();
     let mut enum_names: EnumNameRegistry = HashMap::new();
@@ -173,11 +343,11 @@ fn build_hierarchy<R: BufRead + Seek>(
     fst_reader
         .read_hierarchy(|entry| match entry {
             FstHierarchyEntry::Scope { name, .. } => {
-                scope_stack.push(name.to_string());
+                scope_id = tree.intern(scope_id, &name);
                 last_handle = None;
             }
             FstHierarchyEntry::UpScope => {
-                scope_stack.pop();
+                scope_id = tree.nodes[scope_id as usize].parent.unwrap_or(tree.root());
                 last_handle = None;
             }
             FstHierarchyEntry::Var {
@@ -188,16 +358,12 @@ fn build_hierarchy<R: BufRead + Seek>(
                 handle,
                 ..
             } => {
-                let mut full_path = scope_stack.join(".");
-                if !full_path.is_empty() {
-                    full_path.push('.');
-                }
                 let name = if options.no_range_space {
                     name.replace(" [", "[")
                 } else {
                     name
                 };
-                full_path.push_str(&name);
+                let leaf = tree.intern(scope_id, &name);
                 let idx = handle.get_index();
                 last_handle = Some(idx);
                 // FST stores real sizes in bytes (8); normalize to bits (64)
@@ -210,7 +376,7 @@ fn build_hierarchy<R: BufRead + Seek>(
                     vars: Vec::new(),
                 });
                 entry.vars.push(VarEntry {
-                    name: full_path,
+                    name: leaf,
                     meta: VarMeta {
                         var_type: fst_var_type_str(tpe).to_string(),
                         size,
@@ -268,7 +434,7 @@ fn build_hierarchy<R: BufRead + Seek>(
         return Err(e);
     }
 
-    Ok(signal_map)
+    Ok((signal_map, tree))
 }
 
 /// Write all variable names from the hierarchy to a writer
@@ -484,10 +650,12 @@ fn push_attr(signal_map: &mut SignalMap, handle: usize, attr: String) {
 }
 
 /// Walk the VCD scope item tree and populate hierarchy maps.
-/// `prefix` is the dot-joined path of parent scopes, cached to avoid repeated joins.
+/// `scope_id` is the current position in the NameTree.
+#[allow(clippy::too_many_arguments)]
 fn walk_vcd_items(
     items: &[vcd::ScopeItem],
-    prefix: &str,
+    scope_id: NameId,
+    tree: &mut NameTree,
     signal_map: &mut SignalMap,
     id_to_idx: &mut HashMap<vcd::IdCode, usize>,
     enum_tables: &mut EnumTableRegistry,
@@ -498,14 +666,11 @@ fn walk_vcd_items(
     for item in items {
         match item {
             vcd::ScopeItem::Scope(scope) => {
-                let child_prefix = if prefix.is_empty() {
-                    scope.identifier.clone()
-                } else {
-                    format!("{}.{}", prefix, scope.identifier)
-                };
+                let child_id = tree.intern(scope_id, &scope.identifier);
                 walk_vcd_items(
                     &scope.items,
-                    &child_prefix,
+                    child_id,
+                    tree,
                     signal_map,
                     id_to_idx,
                     enum_tables,
@@ -537,16 +702,12 @@ fn walk_vcd_items(
                     }
                     None => ref_name,
                 };
-                let full_path = if prefix.is_empty() {
-                    name
-                } else {
-                    format!("{}.{}", prefix, name)
-                };
+                let leaf = tree.intern(scope_id, &name);
                 let entry = signal_map.entry(idx).or_insert_with(|| SignalInfo {
                     vars: Vec::new(),
                 });
                 entry.vars.push(VarEntry {
-                    name: full_path,
+                    name: leaf,
                     meta: VarMeta {
                         var_type: var.var_type.to_string(),
                         size: var.size,
@@ -595,40 +756,43 @@ fn walk_vcd_items(
 fn build_vcd_hierarchy(
     header: &vcd::Header,
     options: &NameOptions,
-) -> Result<(SignalMap, HashMap<vcd::IdCode, usize>), String> {
+) -> Result<(SignalMap, HashMap<vcd::IdCode, usize>, NameTree), String> {
     let mut signal_map: SignalMap = HashMap::new();
     let mut id_to_idx: HashMap<vcd::IdCode, usize> = HashMap::new();
+    let mut tree = NameTree::new();
     let mut enum_tables: EnumTableRegistry = HashMap::new();
     let mut enum_names: EnumNameRegistry = HashMap::new();
     walk_vcd_items(
         &header.items,
-        "",
+        tree.root(),
+        &mut tree,
         &mut signal_map,
         &mut id_to_idx,
         &mut enum_tables,
         &mut enum_names,
         options,
     )?;
-    Ok((signal_map, id_to_idx))
+    Ok((signal_map, id_to_idx, tree))
 }
 
 /// Write all signal attributes from the hierarchy to a writer
 pub fn write_attrs<W: Write>(
     writer: &mut W,
     signal_map: &SignalMap,
+    tree: &NameTree,
     sort: bool,
 ) -> std::io::Result<()> {
-    let mut entries: Vec<(&str, &VarMeta, &[String])> = signal_map
+    let mut entries: Vec<(String, &VarMeta, &[String])> = signal_map
         .values()
         .flat_map(|info| {
             info.vars
                 .iter()
-                .map(|v| (v.name.as_str(), &v.meta, v.attrs.as_slice()))
+                .map(|v| (tree.format_path(v.name), &v.meta, v.attrs.as_slice()))
         })
         .collect();
 
     if sort {
-        entries.sort_by_key(|(name, _, _)| *name);
+        entries.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
     }
 
     for (name, meta, attrs) in entries {
@@ -644,36 +808,50 @@ pub fn write_attrs<W: Write>(
     Ok(())
 }
 
-/// Merge multiple SignalMaps into one with remapped handles.
+/// Merge multiple SignalMaps and NameTrees into one with remapped handles.
 ///
-/// Each file's handles are offset so they don't collide. Returns the merged map
-/// and per-file handle offsets. Errors if any signal name appears in more than one
-/// file (duplicate signal) or if qualified enum definitions conflict across files.
+/// Each file's handles are offset so they don't collide. Returns the merged map,
+/// merged tree, and per-file handle offsets. Errors if any signal name appears in
+/// more than one file (duplicate signal) or if qualified enum definitions conflict
+/// across files.
 pub fn merge_signal_maps(
-    maps: &[(&SignalMap, &str)],
-) -> Result<(SignalMap, Vec<usize>), String> {
+    maps: &[(&SignalMap, &NameTree, &str)],
+) -> Result<(SignalMap, NameTree, Vec<usize>), String> {
     if maps.len() == 1 {
-        return Ok((maps[0].0.clone(), vec![0]));
+        // Single file — clone the map but also rebuild the tree so NameIds
+        // remain valid.  For single-file case, NameIds don't need remapping.
+        let (map, tree, _) = maps[0];
+        return Ok((map.clone(), clone_name_tree(tree), vec![0]));
     }
 
     let mut merged = SignalMap::new();
+    let mut merged_tree = NameTree::new();
     let mut offsets = Vec::with_capacity(maps.len());
     let mut next_handle: usize = 0;
     let mut seen_names: HashMap<String, &str> = HashMap::new();
     let mut enum_names: EnumNameRegistry = HashMap::new();
 
-    for &(map, path) in maps {
+    for &(map, tree, path) in maps {
         offsets.push(next_handle);
         for (&handle, info) in map {
             let new_handle = handle + next_handle;
+            let mut new_vars = Vec::with_capacity(info.vars.len());
             for var in &info.vars {
-                if let Some(&prev_path) = seen_names.get(&var.name) {
+                let flat_name = tree.format_path(var.name);
+                if let Some(&prev_path) = seen_names.get(&flat_name) {
                     return Err(format!(
                         "duplicate signal '{}' found in both {} and {}",
-                        var.name, prev_path, path,
+                        flat_name, prev_path, path,
                     ));
                 }
-                seen_names.insert(var.name.clone(), path);
+                seen_names.insert(flat_name, path);
+
+                // Re-intern segments into merged tree
+                let segments = tree.segments(var.name);
+                let mut cur = merged_tree.root();
+                for seg in &segments {
+                    cur = merged_tree.intern(cur, seg);
+                }
 
                 // Check cross-file enum conflicts for qualified names
                 for attr in &var.attrs {
@@ -693,43 +871,70 @@ pub fn merge_signal_maps(
                         }
                     }
                 }
+                new_vars.push(VarEntry {
+                    name: cur,
+                    meta: var.meta.clone(),
+                    attrs: var.attrs.clone(),
+                });
             }
-            merged.insert(new_handle, info.clone());
+            merged.insert(new_handle, SignalInfo { vars: new_vars });
         }
         let max_handle = map.keys().max().copied().unwrap_or(0);
         next_handle += max_handle + 1;
     }
 
-    Ok((merged, offsets))
+    Ok((merged, merged_tree, offsets))
+}
+
+/// Clone a NameTree (the single-file shortcut avoids re-interning).
+fn clone_name_tree(tree: &NameTree) -> NameTree {
+    NameTree {
+        nodes: tree
+            .nodes
+            .iter()
+            .map(|n| NameNode {
+                segment: n.segment.clone(),
+                parent: n.parent,
+                children: n.children.clone(),
+            })
+            .collect(),
+    }
 }
 
 /// Open multiple waveform files and merge their hierarchies.
 ///
 /// Each file is opened with the given format (or auto-detected if `None`).
-/// Returns readers, the merged SignalMap, and per-file handle offsets.
+/// Returns readers, the merged WaveHierarchy, and per-file handle offsets.
 /// Errors if any signal name appears in multiple files.
 pub fn open_wave_files(
     paths: &[&Path],
     options: &NameOptions,
     format: Option<WaveFormat>,
-) -> Result<(Vec<WaveReader>, SignalMap, Vec<usize>), String> {
+) -> Result<(Vec<WaveReader>, WaveHierarchy, Vec<usize>), String> {
     let mut readers = Vec::with_capacity(paths.len());
-    let mut maps = Vec::with_capacity(paths.len());
+    let mut hierarchies = Vec::with_capacity(paths.len());
 
     for &path in paths {
-        let (reader, map) = open_wave_file_with_format(path, options, format)?;
+        let (reader, hier) = open_wave_file_with_format(path, options, format)?;
         readers.push(reader);
-        maps.push(map);
+        hierarchies.push(hier);
     }
 
-    let maps_with_paths: Vec<(&SignalMap, &str)> = maps
+    let maps_with_paths: Vec<(&SignalMap, &NameTree, &str)> = hierarchies
         .iter()
         .zip(paths.iter())
-        .map(|(m, p)| (m, p.to_str().unwrap_or("<unknown>")))
+        .map(|(h, p)| (&h.signal_map, &h.names, p.to_str().unwrap_or("<unknown>")))
         .collect();
 
-    let (merged_map, offsets) = merge_signal_maps(&maps_with_paths)?;
-    Ok((readers, merged_map, offsets))
+    let (merged_map, merged_tree, offsets) = merge_signal_maps(&maps_with_paths)?;
+    Ok((
+        readers,
+        WaveHierarchy {
+            signal_map: merged_map,
+            names: merged_tree,
+        },
+        offsets,
+    ))
 }
 
 /// Open a file as FST format
@@ -737,12 +942,18 @@ fn open_as_fst(
     buf: BufReader<File>,
     path: &Path,
     options: &NameOptions,
-) -> Result<(WaveReader, SignalMap), String> {
+) -> Result<(WaveReader, WaveHierarchy), String> {
     let mut fst_reader = fst_reader::FstReader::open(buf)
         .map_err(|e| format!("Failed to open FST file {}: {}", path.display(), e))?;
-    let signal_map = build_hierarchy(&mut fst_reader, options)
+    let (signal_map, tree) = build_hierarchy(&mut fst_reader, options)
         .map_err(|e| format!("Failed to read hierarchy from {}: {}", path.display(), e))?;
-    Ok((WaveReader::Fst(Box::new(fst_reader)), signal_map))
+    Ok((
+        WaveReader::Fst(Box::new(fst_reader)),
+        WaveHierarchy {
+            signal_map,
+            names: tree,
+        },
+    ))
 }
 
 /// Open a file as VCD format
@@ -750,18 +961,24 @@ fn open_as_vcd(
     buf: BufReader<File>,
     path: &Path,
     options: &NameOptions,
-) -> Result<(WaveReader, SignalMap), String> {
+) -> Result<(WaveReader, WaveHierarchy), String> {
     let mut parser = vcd::Parser::new(buf).with_gtkwave_extensions(true);
     let header = parser
         .parse_header()
         .map_err(|e| format!("Failed to parse VCD file {}: {}", path.display(), e))?;
-    let (signal_map, id_to_idx) = build_vcd_hierarchy(&header, options)?;
+    let (signal_map, id_to_idx, tree) = build_vcd_hierarchy(&header, options)?;
     let vcd_data = VcdData {
         parser,
         id_to_idx,
         current_time: 0,
     };
-    Ok((WaveReader::Vcd(vcd_data), signal_map))
+    Ok((
+        WaveReader::Vcd(vcd_data),
+        WaveHierarchy {
+            signal_map,
+            names: tree,
+        },
+    ))
 }
 
 /// Waveform file formats that can be forced via `--format`
@@ -778,7 +995,7 @@ pub enum WaveFormat {
 pub fn open_wave_file(
     path: &Path,
     options: &NameOptions,
-) -> Result<(WaveReader, SignalMap), String> {
+) -> Result<(WaveReader, WaveHierarchy), String> {
     open_wave_file_with_format(path, options, None)
 }
 
@@ -791,7 +1008,7 @@ pub fn open_wave_file_with_format(
     path: &Path,
     options: &NameOptions,
     format: Option<WaveFormat>,
-) -> Result<(WaveReader, SignalMap), String> {
+) -> Result<(WaveReader, WaveHierarchy), String> {
     let f = File::open(path).map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
 
     match format {

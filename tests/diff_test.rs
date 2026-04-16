@@ -11,11 +11,11 @@ use wavetools::{compare_signal_meta, compare_signal_names, diff_waves, open_and_
 // Helper to check signal name differences
 fn check_signal_names(file1: &str, file2: &str) -> (bool, String) {
     let name_options = NameOptions::default();
-    let (_reader1, handle_to_names1, _reader2, handle_to_names2) =
+    let (_reader1, hier1, _reader2, hier2) =
         open_and_read_waves(file1, file2, &name_options)
             .expect("Failed to open wave files");
 
-    let (only_in_1, only_in_2) = compare_signal_names(&handle_to_names1, &handle_to_names2);
+    let (only_in_1, only_in_2) = compare_signal_names(&hier1, &hier2);
 
     let has_differences = !only_in_1.is_empty() || !only_in_2.is_empty();
     let mut msg = String::new();
@@ -184,7 +184,7 @@ fn test_value_diff() {
 
 fn run_wave_diff_test(file1: &str, file2: &str) -> (bool, String) {
     let name_options = NameOptions::default();
-    let (reader1, handle_to_names1, reader2, handle_to_names2) =
+    let (reader1, hier1, reader2, hier2) =
         open_and_read_waves(file1, file2, &name_options)
             .expect("Failed to open wave files");
 
@@ -192,9 +192,9 @@ fn run_wave_diff_test(file1: &str, file2: &str) -> (bool, String) {
     let has_differences = diff_waves(
         &mut output,
         reader1,
-        &handle_to_names1,
+        &hier1,
         reader2,
-        &handle_to_names2,
+        &hier2,
         0,
         None,
         None,
@@ -261,7 +261,7 @@ fn run_wave_diff_test_with_epsilon(
     real_epsilon: Option<f64>,
 ) -> (bool, String) {
     let name_options = NameOptions::default();
-    let (reader1, handle_to_names1, reader2, handle_to_names2) =
+    let (reader1, hier1, reader2, hier2) =
         open_and_read_waves(file1, file2, &name_options)
             .expect("Failed to open wave files");
 
@@ -269,9 +269,9 @@ fn run_wave_diff_test_with_epsilon(
     let has_differences = diff_waves(
         &mut output,
         reader1,
-        &handle_to_names1,
+        &hier1,
         reader2,
-        &handle_to_names2,
+        &hier2,
         0,
         None,
         real_epsilon,
@@ -358,7 +358,7 @@ fn run_wave_diff_test_with_range(
     end: Option<u64>,
 ) -> (bool, String) {
     let name_options = NameOptions::default();
-    let (reader1, handle_to_names1, reader2, handle_to_names2) =
+    let (reader1, hier1, reader2, hier2) =
         open_and_read_waves(file1, file2, &name_options)
             .expect("Failed to open wave files");
 
@@ -366,9 +366,9 @@ fn run_wave_diff_test_with_range(
     let has_differences = diff_waves(
         &mut output,
         reader1,
-        &handle_to_names1,
+        &hier1,
         reader2,
-        &handle_to_names2,
+        &hier2,
         start,
         end,
         None,
@@ -478,7 +478,7 @@ fn test_diff_epsilon_wide_bitvector_no_false_positive() {
 #[test]
 fn test_diff_type_mismatch() {
     let name_options = NameOptions::default();
-    let (_r1, map1, _r2, map2) =
+    let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
             "tests/data/type_mismatch.a.vcd",
             "tests/data/type_mismatch.b.vcd",
@@ -486,7 +486,7 @@ fn test_diff_type_mismatch() {
         )
         .expect("Failed to open wave files");
 
-    let diffs = compare_signal_meta(&map1, &map2);
+    let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(!diffs.is_empty(), "Should detect type mismatches");
 
     // clk: wire vs reg
@@ -506,7 +506,7 @@ fn test_diff_type_mismatch() {
 #[test]
 fn test_diff_size_mismatch() {
     let name_options = NameOptions::default();
-    let (_r1, map1, _r2, map2) =
+    let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
             "tests/data/type_mismatch.a.vcd",
             "tests/data/type_mismatch.b.vcd",
@@ -514,7 +514,7 @@ fn test_diff_size_mismatch() {
         )
         .expect("Failed to open wave files");
 
-    let diffs = compare_signal_meta(&map1, &map2);
+    let diffs = compare_signal_meta(&hier1, &hier2);
 
     // data: size 8 vs 16
     assert!(
@@ -527,7 +527,7 @@ fn test_diff_size_mismatch() {
 #[test]
 fn test_diff_identical_metadata() {
     let name_options = NameOptions::default();
-    let (_r1, map1, _r2, map2) =
+    let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
             "tests/data/type_mismatch.a.vcd",
             "tests/data/type_mismatch.a.vcd",
@@ -535,7 +535,7 @@ fn test_diff_identical_metadata() {
         )
         .expect("Failed to open wave files");
 
-    let diffs = compare_signal_meta(&map1, &map2);
+    let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(diffs.is_empty(), "Same file should have no metadata diffs: {:?}", diffs);
 }
 
@@ -545,7 +545,7 @@ fn test_diff_cross_format_metadata() {
     // original types like "reg"/"integer" while VCD might use "wire"). Direction
     // comparison should be skipped since VCD has no direction info ("implicit").
     let name_options = NameOptions::default();
-    let (_r1, map1, _r2, map2) =
+    let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
             "tests/data/counter.fst",
             "tests/data/counter.vcd",
@@ -553,7 +553,7 @@ fn test_diff_cross_format_metadata() {
         )
         .expect("Failed to open wave files");
 
-    let diffs = compare_signal_meta(&map1, &map2);
+    let diffs = compare_signal_meta(&hier1, &hier2);
     // Direction diffs should NOT appear since VCD direction is "implicit"
     assert!(
         !diffs.iter().any(|d| d.contains("direction")),
@@ -570,7 +570,7 @@ fn test_diff_enum_attr_difference() {
     //   a: state has enum state_t (IDLE/ACTIVE/DONE)
     //   b: state has enum alt_state_t (OFF/ON/ERR)
     let name_options = NameOptions::default();
-    let (_r1, map1, _r2, map2) =
+    let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
             "tests/data/enum_attrs.a.vcd",
             "tests/data/enum_attrs.b.vcd",
@@ -578,7 +578,7 @@ fn test_diff_enum_attr_difference() {
         )
         .expect("Failed to open wave files");
 
-    let diffs = compare_signal_meta(&map1, &map2);
+    let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(
         diffs.iter().any(|d| d.contains("top.state")),
         "Should detect enum attribute difference on top.state: {:?}",
@@ -592,7 +592,7 @@ fn test_diff_misc_attr_difference() {
     //   a: data has source path /path/to/source.v
     //   b: data has source path /different/path.v
     let name_options = NameOptions::default();
-    let (_r1, map1, _r2, map2) =
+    let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
             "tests/data/enum_attrs.a.vcd",
             "tests/data/enum_attrs.b.vcd",
@@ -600,7 +600,7 @@ fn test_diff_misc_attr_difference() {
         )
         .expect("Failed to open wave files");
 
-    let diffs = compare_signal_meta(&map1, &map2);
+    let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(
         diffs.iter().any(|d| d.contains("top.data")),
         "Should detect misc attribute difference on top.data: {:?}",
@@ -613,7 +613,7 @@ fn test_diff_attr_present_vs_absent() {
     // a: state has enum attr, data has source path attr
     // missing: no attrs on any signal
     let name_options = NameOptions::default();
-    let (_r1, map1, _r2, map2) =
+    let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
             "tests/data/enum_attrs.a.vcd",
             "tests/data/enum_attrs.missing.vcd",
@@ -621,7 +621,7 @@ fn test_diff_attr_present_vs_absent() {
         )
         .expect("Failed to open wave files");
 
-    let diffs = compare_signal_meta(&map1, &map2);
+    let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(
         diffs.iter().any(|d| d.contains("top.state")),
         "Should detect missing enum attr on top.state: {:?}",
@@ -638,7 +638,7 @@ fn test_diff_attr_present_vs_absent() {
 fn test_diff_identical_attrs_no_diff() {
     // Same file compared to itself — no attr differences
     let name_options = NameOptions::default();
-    let (_r1, map1, _r2, map2) =
+    let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
             "tests/data/enum_attrs.a.vcd",
             "tests/data/enum_attrs.a.vcd",
@@ -646,7 +646,7 @@ fn test_diff_identical_attrs_no_diff() {
         )
         .expect("Failed to open wave files");
 
-    let diffs = compare_signal_meta(&map1, &map2);
+    let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(diffs.is_empty(), "Same file should have no diffs: {:?}", diffs);
 }
 
@@ -655,7 +655,7 @@ fn test_diff_real_size_normalized_across_formats() {
     // FST stores real signal sizes in bytes (8), VCD in bits (64).
     // After normalization both should report 64 — no size mismatch.
     let name_options = NameOptions::default();
-    let (_r1, map1, _r2, map2) =
+    let (_r1, hier1, _r2, hier2) =
         open_and_read_waves(
             "tests/data/real_base.fst",
             "tests/data/real_base.vcd",
@@ -663,7 +663,7 @@ fn test_diff_real_size_normalized_across_formats() {
         )
         .expect("Failed to open wave files");
 
-    let diffs = compare_signal_meta(&map1, &map2);
+    let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(
         diffs.is_empty(),
         "FST and VCD of the same design should have no metadata diffs: {:?}",

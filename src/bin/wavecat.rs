@@ -10,7 +10,7 @@ use clap::Parser;
 use glob::Pattern;
 use wavetools::{
     names_only, open_wave_files, write_attrs, write_names, write_signals_wave_multi, NameOptions,
-    SignalMap, SignalOutputOptions, WaveFormat,
+    SignalOutputOptions, WaveFormat, WaveHierarchy,
 };
 use std::path::PathBuf;
 use std::process;
@@ -95,17 +95,18 @@ fn parse_filter_patterns(filter: &[String]) -> Result<Vec<Pattern>, String> {
         .collect()
 }
 
-fn apply_filters(signal_map: SignalMap, patterns: &[Pattern]) -> SignalMap {
+fn apply_filters(hier: &mut WaveHierarchy, patterns: &[Pattern]) {
     if patterns.is_empty() {
-        return signal_map;
+        return;
     }
-    signal_map
-        .into_iter()
-        .filter_map(|(handle, mut info)| {
-            info.vars.retain(|v| patterns.iter().any(|p| p.matches(&v.name)));
-            if info.vars.is_empty() { None } else { Some((handle, info)) }
-        })
-        .collect()
+    let tree = &hier.names;
+    hier.signal_map.retain(|_, info| {
+        info.vars.retain(|v| {
+            let name = tree.format_path(v.name);
+            patterns.iter().any(|p| p.matches(&name))
+        });
+        !info.vars.is_empty()
+    });
 }
 
 fn main() {
@@ -124,21 +125,21 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
     let patterns = parse_filter_patterns(&args.filter)?;
 
     let paths: Vec<&std::path::Path> = args.file.iter().map(|p| p.as_path()).collect();
-    let (readers, signal_map, offsets) = open_wave_files(&paths, &name_options, args.format)?;
+    let (readers, mut hierarchy, offsets) = open_wave_files(&paths, &name_options, args.format)?;
 
-    let signal_map = apply_filters(signal_map, &patterns);
+    apply_filters(&mut hierarchy, &patterns);
 
     if args.attrs {
         let mut stdout = std::io::stdout();
-        write_attrs(&mut stdout, &signal_map, args.sort)
+        write_attrs(&mut stdout, &hierarchy.signal_map, &hierarchy.names, args.sort)
             .map_err(|e| format!("Failed to write attrs: {}", e))?;
     } else if args.names {
-        let names = names_only(&signal_map);
+        let names = names_only(&hierarchy.signal_map, &hierarchy.names);
         let mut stdout = std::io::stdout();
         write_names(&mut stdout, &names, args.sort)
             .map_err(|e| format!("Failed to write names: {}", e))?;
     } else {
-        let names = names_only(&signal_map);
+        let names = names_only(&hierarchy.signal_map, &hierarchy.names);
         let output_options = SignalOutputOptions {
             time_pound: args.time_pound,
             sort: args.sort,
