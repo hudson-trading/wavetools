@@ -1,0 +1,9 @@
+top.arrp [2:1]  wire  3
+  array packed: bounds 17179869187
+top.clk  wire  1
+top.cyc  reg  32
+  class packed: members 2
+top.state  reg  3
+  enum state_t: IDLE=00 ACTIVE=01 DONE=10
+top.v_real  real  64
+  array unpacked: bounds 1

@@ -1,0 +1,11 @@
+0 top.arrp [2:1] 000
+0 top.clk 0
+0 top.cyc 00000000000000000000000000000000
+0 top.state 000
+0 top.v_real 0
+10 top.arrp [2:1] 001
+10 top.clk 1
+10 top.cyc 00000000000000000000000000000001
+10 top.state 001
+10 top.v_real 1.5
+20 top.clk 0

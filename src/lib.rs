@@ -18,7 +18,8 @@ pub use diff::{
 };
 
 use fst_reader::{
-    is_fst_file, FstHierarchyEntry, FstReader, FstVarDirection, FstVarType,
+    is_fst_file, FstArrayType, FstEnumType, FstHierarchyEntry, FstPackType, FstReader,
+    FstVarDirection, FstVarType,
 };
 use std::collections::HashMap;
 use std::fs::File;
@@ -223,6 +224,10 @@ fn build_hierarchy<R: BufRead + Seek>(
                 handle,
                 mapping,
             } => {
+                // fst_reader stores mapping as (encoding, value_name);
+                // normalize to (value_name, encoding) to match VCD convention.
+                let mapping: Vec<(String, String)> =
+                    mapping.into_iter().map(|(enc, val)| (val, enc)).collect();
                 if conflict_error.is_none() {
                     if let Err(e) = check_enum_conflict(&mut enum_names, &name, &mapping) {
                         conflict_error = Some(e);
@@ -235,6 +240,24 @@ fn build_hierarchy<R: BufRead + Seek>(
                     if let Some((name, mapping)) = enum_tables.get(&handle) {
                         push_attr(&mut signal_map, var_idx, format_enum_attr(name, mapping));
                     }
+                }
+            }
+            FstHierarchyEntry::Array { name, array_type, left, right } => {
+                if let Some(var_idx) = last_handle {
+                    push_attr(&mut signal_map, var_idx,
+                        format_array_attr(&name, array_type, left, right));
+                }
+            }
+            FstHierarchyEntry::Pack { name, pack_type, value } => {
+                if let Some(var_idx) = last_handle {
+                    push_attr(&mut signal_map, var_idx,
+                        format_pack_attr(&name, pack_type, value));
+                }
+            }
+            FstHierarchyEntry::SVEnum { name, enum_type, value } => {
+                if let Some(var_idx) = last_handle {
+                    push_attr(&mut signal_map, var_idx,
+                        format_sv_enum_attr(&name, enum_type, value));
                 }
             }
             _ => {}
@@ -400,6 +423,55 @@ fn parse_vcd_enum_table(name: &str) -> Option<(String, Vec<(String, String)>)> {
 /// Format an enum table as a string matching the FST enum attr format.
 fn format_enum_attr(name: &str, mapping: &[(String, String)]) -> String {
     format!("enum {}: {}", name, format_mapping(mapping))
+}
+
+/// Format an FST array attribute to match VCD output.
+/// VCD format: "array <subtype>: <name> <arg>"
+fn format_array_attr(name: &str, array_type: FstArrayType, left: i32, right: i32) -> String {
+    let subtype = match array_type {
+        FstArrayType::None => "none",
+        FstArrayType::Unpacked => "unpacked",
+        FstArrayType::Packed => "packed",
+        FstArrayType::Sparse => "sparse",
+    };
+    let arg = ((left as i64) << 32) | (right as u32 as i64);
+    format!("array {}: {} {}", subtype, name, arg)
+}
+
+/// Format an FST pack attribute to match VCD output.
+/// VCD format: "class <subtype>: <name> <value>"
+fn format_pack_attr(name: &str, pack_type: FstPackType, value: u64) -> String {
+    let subtype = match pack_type {
+        FstPackType::None => "none",
+        FstPackType::Unpacked => "unpacked",
+        FstPackType::Packed => "packed",
+        FstPackType::TaggedPacked => "tagged_packed",
+    };
+    format!("class {}: {} {}", subtype, name, value)
+}
+
+/// Format an FST SV enum attribute to match VCD output.
+/// VCD format: "enum <subtype>: <name> <value>"
+fn format_sv_enum_attr(name: &str, enum_type: FstEnumType, value: u64) -> String {
+    let subtype = match enum_type {
+        FstEnumType::Integer => "integer",
+        FstEnumType::Bit => "bit",
+        FstEnumType::Logic => "logic",
+        FstEnumType::Int => "int",
+        FstEnumType::ShortInt => "shortint",
+        FstEnumType::LongInt => "longint",
+        FstEnumType::Byte => "byte",
+        FstEnumType::UnsignedInteger => "unsigned_integer",
+        FstEnumType::UnsignedBit => "unsigned_bit",
+        FstEnumType::UnsignedLogic => "unsigned_logic",
+        FstEnumType::UnsignedInt => "unsigned_int",
+        FstEnumType::UnsignedShortInt => "unsigned_shortint",
+        FstEnumType::UnsignedLongInt => "unsigned_longint",
+        FstEnumType::UnsignedByte => "unsigned_byte",
+        FstEnumType::Reg => "reg",
+        FstEnumType::Time => "time",
+    };
+    format!("enum {}: {} {}", subtype, name, value)
 }
 
 /// Push an attribute string onto the last VarEntry for a given handle.

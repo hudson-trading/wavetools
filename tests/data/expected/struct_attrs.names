@@ -1,0 +1,5 @@
+top.arrp [2:1]
+top.clk
+top.cyc
+top.state
+top.v_real
