@@ -19,6 +19,7 @@ path = "src/bin/wavediff.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
 fst-reader = "0.16.5"
 glob = "0.3"
 

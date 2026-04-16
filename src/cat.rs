@@ -7,11 +7,15 @@
 //------------------------------------------------------------------------------
 
 use std::io::{BufRead, Seek, Write};
-use std::sync::mpsc;
 
+use crossbeam_channel as channel;
 use fst_reader::{FstFilter, FstSignalHandle, FstSignalValue};
 
 use crate::{next_vcd_change, SignalNames, WaveReader};
+
+/// Max queued signal changes per channel. Bounds memory while keeping producers
+/// busy: at ~150 bytes/change this caps each channel at ~10 MB of backlog.
+const CHANNEL_BOUND: usize = 64 * 1024;
 
 /// Options for outputting signals
 #[derive(Debug, Clone, Default)]
@@ -170,7 +174,7 @@ fn send_cat_changes(
     handle_offset: usize,
     start: u64,
     end: Option<u64>,
-    tx: mpsc::Sender<CatChange>,
+    tx: channel::Sender<CatChange>,
 ) {
     match &mut reader {
         WaveReader::Fst(fst_reader) => {
@@ -252,7 +256,7 @@ pub fn write_signals_wave_multi<W: Write>(
     let mut threads = Vec::new();
 
     for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel::bounded(CHANNEL_BOUND);
         threads.push(std::thread::spawn(move || {
             send_cat_changes(reader, offset, start, end, tx);
         }));

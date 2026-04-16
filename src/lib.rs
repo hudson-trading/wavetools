@@ -25,7 +25,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, Write};
 use std::path::Path;
-use std::sync::mpsc;
 
 /// Mapping from signal handle indices to their fully qualified hierarchical names
 pub type SignalNames = HashMap<usize, Vec<String>>;
@@ -200,7 +199,7 @@ pub struct WaveHierarchy {
 /// time (via `get_time`).  Each item is passed to `on_item`; if that returns an
 /// error the merge stops and the error is propagated.
 pub(crate) fn kway_merge_channels<T>(
-    rxs: &[mpsc::Receiver<T>],
+    rxs: &[crossbeam_channel::Receiver<T>],
     get_time: impl Fn(&T) -> u64,
     mut on_item: impl FnMut(T) -> std::io::Result<()>,
 ) -> std::io::Result<()> {

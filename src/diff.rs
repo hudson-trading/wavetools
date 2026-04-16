@@ -10,11 +10,19 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{BufRead, Seek, Write};
 use std::path::Path;
-use std::sync::mpsc;
 
+use crossbeam_channel as channel;
 use fst_reader::{FstFilter, FstSignalValue};
 
 use crate::{names_only, next_vcd_change, NameOptions, NameTree, SignalMap, SignalNames, WaveHierarchy, WaveReader};
+
+/// Max queued batches per channel. Each batch holds up to BATCH_SIZE changes.
+/// With 64 batches of 4096 changes at ~23 bytes/value, each channel holds
+/// ~30 MB of backlog at most.
+const CHANNEL_BOUND: usize = 64;
+
+/// Number of signal changes collected before sending a batch through the channel.
+const BATCH_SIZE: usize = 4096;
 
 /// Owned version of `FstSignalValue` for sending through channels
 #[derive(Debug, Clone)]
@@ -148,21 +156,36 @@ fn build_handle_mapping(
     handle_mapping
 }
 
-/// Represents an individual signal change
+/// A single signal value change (handle + value; time is on the enclosing TimeBatch).
 #[derive(Debug)]
 struct SignalChange {
-    time: u64,
     handle: usize,
     value: OwnedSignalValue,
 }
 
-/// Read signals from an FST reader and send individual changes to a channel
+/// A batch of signal changes all at the same simulation time.
+/// Batches are capped at BATCH_SIZE; a single time step may span multiple batches.
+#[derive(Debug)]
+struct TimeBatch {
+    time: u64,
+    changes: Vec<SignalChange>,
+}
+
+/// Flush the current batch through `tx`, replacing it with a fresh empty vec.
+fn flush_batch(tx: &channel::Sender<TimeBatch>, time: u64, changes: &mut Vec<SignalChange>) {
+    let full = std::mem::replace(changes, Vec::with_capacity(BATCH_SIZE));
+    let _ = tx.send(TimeBatch { time, changes: full });
+}
+
+/// Read signals from an FST reader and send same-time batches to a channel.
 fn read_and_send_signals<R: BufRead + Seek>(
     mut fst_reader: fst_reader::FstReader<R>,
     filter: fst_reader::FstFilter,
     handle_offset: usize,
-    tx: mpsc::Sender<SignalChange>,
+    tx: channel::Sender<TimeBatch>,
 ) {
+    let mut batch = Vec::with_capacity(BATCH_SIZE);
+    let mut batch_time: u64 = 0;
     let _ = fst_reader.read_signals(&filter, |time, handle, value| {
         if time < filter.start {
             return;
@@ -172,21 +195,27 @@ fn read_and_send_signals<R: BufRead + Seek>(
                 return;
             }
         }
-        let _ = tx.send(SignalChange {
-            time,
+        if !batch.is_empty() && (time != batch_time || batch.len() >= BATCH_SIZE) {
+            flush_batch(&tx, batch_time, &mut batch);
+        }
+        batch_time = time;
+        batch.push(SignalChange {
             handle: handle.get_index() + handle_offset,
             value: OwnedSignalValue::from_fst_value(value),
         });
     });
+    if !batch.is_empty() {
+        let _ = tx.send(TimeBatch { time: batch_time, changes: batch });
+    }
 }
 
-/// Consumes changes from `rx1` (file1) and `rx2` (file2), buffering as needed to
+/// Consumes batches from `rx1` (file1) and `rx2` (file2), buffering as needed to
 /// match signals across potentially different orderings. Returns `true` if differences
 /// were found.
 fn compare_signal_channels<W: Write>(
     writer: &mut W,
-    rx1: mpsc::Receiver<SignalChange>,
-    rx2: mpsc::Receiver<SignalChange>,
+    rx1: channel::Receiver<TimeBatch>,
+    rx2: channel::Receiver<TimeBatch>,
     handle_mapping: &HashMap<usize, Vec<usize>>,
     handle_to_names1: &SignalNames,
     handle_to_names2: &SignalNames,
@@ -199,91 +228,82 @@ fn compare_signal_channels<W: Write>(
     // File2 handles that were successfully matched at the current time step,
     // so we can evict their buffer entries when we advance to the next time.
     let mut matched_at_current_time: HashSet<usize> = HashSet::new();
-    let mut current_time: Option<u64> = None;
+    let mut prev_time: Option<u64> = None;
     let mut source2_ended = false;
 
-    // Drive the comparison from file1's change stream.  For each file1
-    // change we look up the corresponding file2 value—either already
-    // buffered or by reading ahead on file2's channel.
-    for change1 in rx1 {
+    // Drive the comparison from file1's batch stream.
+    for batch1 in &rx1 {
         // When we move to a new time step, evict buffer entries for file2
         // handles that were already matched—they won't be needed again.
-        if let Some(prev_time) = current_time {
-            if prev_time != change1.time {
+        if let Some(pt) = prev_time {
+            if pt != batch1.time {
                 for &handle in &matched_at_current_time {
-                    buffered2.remove(&(prev_time, handle));
+                    buffered2.remove(&(pt, handle));
                 }
                 matched_at_current_time.clear();
             }
         }
-        current_time = Some(change1.time);
+        prev_time = Some(batch1.time);
+        let t1 = batch1.time;
 
-        if let Some(handles2) = handle_mapping.get(&change1.handle) {
-            for &handle2 in handles2 {
-                let key = (change1.time, handle2);
-                let mut found = buffered2.get(&key).cloned();
-                let mut saw_time_in_source2 = false;
+        for change1 in batch1.changes {
+            if let Some(handles2) = handle_mapping.get(&change1.handle) {
+                for &handle2 in handles2 {
+                    let mut found = buffered2.get(&(t1, handle2)).cloned();
+                    let mut saw_time_in_source2 = false;
 
-                // Read ahead on file2's channel until we find the target
-                // (time, handle) or pass it.  Everything read along the way
-                // is buffered for future lookups.
-                if found.is_none() && !source2_ended {
-                    loop {
-                        match rx2.recv() {
-                            Ok(change2) => {
-                                if change2.time == change1.time {
-                                    saw_time_in_source2 = true;
+                    // Read ahead on file2's channel until we find the target
+                    // (time, handle) or pass it.  Entire batches are drained
+                    // into the buffer at once.
+                    if found.is_none() && !source2_ended {
+                        loop {
+                            match rx2.recv() {
+                                Ok(batch2) => {
+                                    let t2 = batch2.time;
+                                    if t2 == t1 {
+                                        saw_time_in_source2 = true;
+                                    }
+                                    let mut found_in_batch = false;
+                                    for c in batch2.changes {
+                                        if t2 == t1 && c.handle == handle2 && found.is_none() {
+                                            found = Some(c.value.clone());
+                                            found_in_batch = true;
+                                        }
+                                        buffered2.insert((t2, c.handle), c.value);
+                                    }
+                                    if found_in_batch || t2 > t1 {
+                                        break;
+                                    }
                                 }
-                                let is_match =
-                                    change2.time == change1.time && change2.handle == handle2;
-                                if is_match {
-                                    found = Some(change2.value.clone());
-                                }
-                                buffered2.insert((change2.time, change2.handle), change2.value);
-                                if is_match || change2.time > change1.time {
+                                Err(_) => {
+                                    source2_ended = true;
                                     break;
                                 }
                             }
-                            Err(_) => {
-                                source2_ended = true;
-                                break;
-                            }
                         }
                     }
-                }
 
-                if let Some(value2) = found {
-                    matched_at_current_time.insert(handle2);
-                    // Both files have this signal at this time—compare values.
-                    if !change1.value.approx_eq(&value2, real_epsilon) {
+                    if let Some(value2) = found {
+                        matched_at_current_time.insert(handle2);
+                        if !change1.value.approx_eq(&value2, real_epsilon) {
+                            has_differences = true;
+                            if let Some(names) = handle_to_names1.get(&change1.handle) {
+                                for name in names {
+                                    writeln!(writer, "{} {} {} != {}", t1, name, change1.value, value2)?;
+                                }
+                            }
+                        }
+                    } else {
                         has_differences = true;
                         if let Some(names) = handle_to_names1.get(&change1.handle) {
                             for name in names {
-                                writeln!(
-                                    writer,
-                                    "{} {} {} != {}",
-                                    change1.time, name, change1.value, value2
-                                )?;
+                                let msg = if saw_time_in_source2 {
+                                    "(not in file2)"
+                                } else {
+                                    "(missing time in file2)"
+                                };
+                                writeln!(writer, "{} {} {} {}", t1, name, change1.value, msg)?;
                             }
-                        }
-                    }
-                } else {
-                    // File2 doesn't have this signal at this time.
-                    // Distinguish "time exists but signal absent" from
-                    // "entire time step missing" for a clearer message.
-                    has_differences = true;
-                    if let Some(names) = handle_to_names1.get(&change1.handle) {
-                        for name in names {
-                            let msg = if saw_time_in_source2 {
-                                "(not in file2)"
-                            } else {
-                                "(missing time in file2)"
-                            };
-                            writeln!(
-                                writer,
-                                "{} {} {} {}",
-                                change1.time, name, change1.value, msg
-                            )?;
                         }
                     }
                 }
@@ -292,33 +312,35 @@ fn compare_signal_channels<W: Write>(
     }
 
     // Evict the last time step's matched entries before reporting leftovers.
-    if let Some(last_time) = current_time {
+    if let Some(pt) = prev_time {
         for &handle in &matched_at_current_time {
-            buffered2.remove(&(last_time, handle));
+            buffered2.remove(&(pt, handle));
         }
     }
 
     // Anything still in the buffer was in file2 but never matched by file1.
-    for ((time, handle), value) in buffered2 {
+    for ((time, handle), value) in &buffered2 {
         has_differences = true;
-        if let Some(names) = handle_to_names2.get(&handle) {
+        if let Some(names) = handle_to_names2.get(handle) {
             for name in names {
                 writeln!(writer, "{} {} {} (only in file2)", time, name, value)?;
             }
         }
     }
 
-    // Drain any remaining file2 changes we never read from the channel.
+    // Drain any remaining file2 batches we never read from the channel.
     if !source2_ended {
-        for change2 in rx2 {
+        for batch2 in &rx2 {
             has_differences = true;
-            if let Some(names) = handle_to_names2.get(&change2.handle) {
-                for name in names {
-                    writeln!(
-                        writer,
-                        "{} {} {} (only in file2)",
-                        change2.time, name, change2.value
-                    )?;
+            for change2 in &batch2.changes {
+                if let Some(names) = handle_to_names2.get(&change2.handle) {
+                    for name in names {
+                        writeln!(
+                            writer,
+                            "{} {} {} (only in file2)",
+                            batch2.time, name, change2.value
+                        )?;
+                    }
                 }
             }
         }
@@ -334,7 +356,7 @@ fn send_wave_changes(
     handle_offset: usize,
     start: u64,
     end: Option<u64>,
-    tx: mpsc::Sender<SignalChange>,
+    tx: channel::Sender<TimeBatch>,
 ) {
     match reader {
         WaveReader::Fst(fst_reader) => {
@@ -346,6 +368,8 @@ fn send_wave_changes(
             read_and_send_signals(*fst_reader, filter, handle_offset, tx);
         }
         WaveReader::Vcd(mut vcd_data) => {
+            let mut batch = Vec::with_capacity(BATCH_SIZE);
+            let mut batch_time: u64 = 0;
             while let Some((time, handle, value_str)) = next_vcd_change(&mut vcd_data) {
                 if time < start {
                     continue;
@@ -355,23 +379,32 @@ fn send_wave_changes(
                         break;
                     }
                 }
-                let _ = tx.send(SignalChange {
-                    time,
+                if !batch.is_empty() && (time != batch_time || batch.len() >= BATCH_SIZE) {
+                    flush_batch(&tx, batch_time, &mut batch);
+                }
+                batch_time = time;
+                batch.push(SignalChange {
                     handle: handle + handle_offset,
                     value: OwnedSignalValue::String(value_str.into_bytes()),
                 });
+            }
+            if !batch.is_empty() {
+                let _ = tx.send(TimeBatch { time: batch_time, changes: batch });
             }
         }
     }
 }
 
 /// Send changes from multiple WaveReaders through a single channel, merging in time order.
+///
+/// Each inner reader produces same-time `TimeBatch`es. The k-way merge picks the
+/// batch with the smallest time and forwards it directly — no re-batching needed.
 fn send_merged_wave_changes(
     readers: Vec<WaveReader>,
     offsets: &[usize],
     start: u64,
     end: Option<u64>,
-    tx: mpsc::Sender<SignalChange>,
+    tx: channel::Sender<TimeBatch>,
 ) {
     if readers.len() == 1 {
         send_wave_changes(
@@ -384,22 +417,35 @@ fn send_merged_wave_changes(
         return;
     }
 
-    // Spawn a thread per reader, each sending to its own channel
+    // Spawn a thread per reader, each sending TimeBatches to its own channel.
     let mut inner_rxs = Vec::with_capacity(readers.len());
     let mut threads = Vec::new();
 
     for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
-        let (inner_tx, inner_rx) = mpsc::channel();
+        let (inner_tx, inner_rx) = channel::bounded(CHANNEL_BOUND);
         threads.push(std::thread::spawn(move || {
             send_wave_changes(reader, offset, start, end, inner_tx);
         }));
         inner_rxs.push(inner_rx);
     }
 
-    let _ = crate::kway_merge_channels(&inner_rxs, |c| c.time, |change| {
-        let _ = tx.send(change);
-        Ok(())
-    });
+    // K-way merge: maintain one head batch per reader, forward the smallest time.
+    let mut heads: Vec<Option<TimeBatch>> = inner_rxs.iter().map(|rx| rx.recv().ok()).collect();
+    loop {
+        let min_idx = heads
+            .iter()
+            .enumerate()
+            .filter_map(|(i, opt)| opt.as_ref().map(|b| (i, b.time)))
+            .min_by_key(|&(_, t)| t)
+            .map(|(i, _)| i);
+        match min_idx {
+            Some(idx) => {
+                let _ = tx.send(heads[idx].take().unwrap());
+                heads[idx] = inner_rxs[idx].recv().ok();
+            }
+            None => break,
+        }
+    }
 
     for t in threads {
         t.join().unwrap();
@@ -523,8 +569,8 @@ pub fn diff_wave_sets<W: Write>(
         &hier2.names,
     );
 
-    let (tx1, rx1) = mpsc::channel();
-    let (tx2, rx2) = mpsc::channel();
+    let (tx1, rx1) = channel::bounded(CHANNEL_BOUND);
+    let (tx2, rx2) = channel::bounded(CHANNEL_BOUND);
 
     let offsets1 = offsets1.to_vec();
     let offsets2 = offsets2.to_vec();
