@@ -3,9 +3,22 @@
 Command-line tools for digital simulation waveform analysis -- read, filter, and diff
 [FST](https://gtkwave.sourceforge.net/) and [VCD](https://en.wikipedia.org/wiki/Value_change_dump) files.
 
-## Building
+## Install
+
+Pre-built binaries are available on the [releases page](https://github.com/hudson-trading/wavetools/releases).
+
+Or install via Cargo:
 
 ```
+cargo install wavetools
+```
+
+Or build from source:
+
+```
+apt-get install cargo
+rustup update
+rustup default stable
 cargo build --release
 ```
 
