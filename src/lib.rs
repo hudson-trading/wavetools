@@ -222,17 +222,53 @@ pub(crate) fn kway_merge_channels<T>(
 }
 
 /// Direction string for signals with no explicit direction
-const IMPLICIT_DIRECTION: &str = "implicit";
+pub const IMPLICIT_DIRECTION: &str = "implicit";
 
 /// Variable metadata normalized across FST and VCD formats
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarMeta {
     /// Canonical type string: "wire", "reg", "integer", "real", etc.
-    pub var_type: String,
+    pub var_type: &'static str,
     /// Bit width
     pub size: u32,
     /// Direction: "implicit", "input", "output", "inout", "buffer", "linkage"
-    pub direction: String,
+    pub direction: &'static str,
+}
+
+/// Map a VCD VarType to its canonical `&'static str`.
+fn vcd_var_type_str(t: vcd::VarType) -> &'static str {
+    match t {
+        vcd::VarType::Event => "event",
+        vcd::VarType::Integer => "integer",
+        vcd::VarType::Parameter => "parameter",
+        vcd::VarType::Real => "real",
+        vcd::VarType::Reg => "reg",
+        vcd::VarType::Supply0 => "supply0",
+        vcd::VarType::Supply1 => "supply1",
+        vcd::VarType::Time => "time",
+        vcd::VarType::Tri => "tri",
+        vcd::VarType::TriAnd => "triand",
+        vcd::VarType::TriOr => "trior",
+        vcd::VarType::TriReg => "trireg",
+        vcd::VarType::Tri0 => "tri0",
+        vcd::VarType::Tri1 => "tri1",
+        vcd::VarType::WAnd => "wand",
+        vcd::VarType::Wire => "wire",
+        vcd::VarType::WOr => "wor",
+        vcd::VarType::String => "string",
+        vcd::VarType::Port => "port",
+        vcd::VarType::SparseArray => "sparray",
+        vcd::VarType::RealTime => "realtime",
+        vcd::VarType::Bit => "bit",
+        vcd::VarType::Logic => "logic",
+        vcd::VarType::Int => "int",
+        vcd::VarType::ShortInt => "shortint",
+        vcd::VarType::LongInt => "longint",
+        vcd::VarType::Byte => "byte",
+        vcd::VarType::Enum => "enum",
+        vcd::VarType::ShortReal => "shortreal",
+        vcd::VarType::RealParameter => "real_parameter",
+    }
 }
 
 /// A single variable declaration: name, metadata, and optional attributes.
@@ -377,9 +413,9 @@ fn build_hierarchy<R: BufRead + Seek>(
                 entry.vars.push(VarEntry {
                     name: leaf,
                     meta: VarMeta {
-                        var_type: fst_var_type_str(tpe).to_string(),
+                        var_type: fst_var_type_str(tpe),
                         size,
-                        direction: fst_direction_str(direction).to_string(),
+                        direction: fst_direction_str(direction),
                     },
                     attrs: Vec::new(),
                 });
@@ -708,9 +744,9 @@ fn walk_vcd_items(
                 entry.vars.push(VarEntry {
                     name: leaf,
                     meta: VarMeta {
-                        var_type: var.var_type.to_string(),
+                        var_type: vcd_var_type_str(var.var_type),
                         size: var.size,
-                        direction: IMPLICIT_DIRECTION.to_string(),
+                        direction: IMPLICIT_DIRECTION,
                     },
                     attrs: Vec::new(),
                 });

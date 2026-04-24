@@ -14,7 +14,7 @@ use std::path::Path;
 use crossbeam_channel as channel;
 use fst_reader::{FstFilter, FstSignalValue};
 
-use crate::{names_only, next_vcd_change, NameOptions, NameTree, SignalMap, SignalNames, WaveHierarchy, WaveReader};
+use crate::{next_vcd_change, NameOptions, NameTree, SignalMap, WaveHierarchy, WaveReader};
 
 /// Max queued batches per channel. Each batch holds up to BATCH_SIZE changes.
 /// With 64 batches of 4096 changes at ~23 bytes/value, each channel holds
@@ -209,16 +209,28 @@ fn read_and_send_signals<R: BufRead + Seek>(
     }
 }
 
+/// Format signal names for a handle on-demand from SignalMap + NameTree.
+/// Only called on diff output lines, so the cost is proportional to mismatches.
+fn format_handle_names(handle: usize, map: &SignalMap, tree: &NameTree) -> Vec<String> {
+    match map.get(&handle) {
+        Some(info) => info.vars.iter().map(|v| tree.format_path(v.name)).collect(),
+        None => Vec::new(),
+    }
+}
+
 /// Consumes batches from `rx1` (file1) and `rx2` (file2), buffering as needed to
 /// match signals across potentially different orderings. Returns `true` if differences
 /// were found.
+#[allow(clippy::too_many_arguments)]
 fn compare_signal_channels<W: Write>(
     writer: &mut W,
     rx1: channel::Receiver<TimeBatch>,
     rx2: channel::Receiver<TimeBatch>,
     handle_mapping: &HashMap<usize, Vec<usize>>,
-    handle_to_names1: &SignalNames,
-    handle_to_names2: &SignalNames,
+    map1: &SignalMap,
+    tree1: &NameTree,
+    map2: &SignalMap,
+    tree2: &NameTree,
     real_epsilon: Option<f64>,
 ) -> std::io::Result<bool> {
     let mut has_differences = false;
@@ -287,23 +299,19 @@ fn compare_signal_channels<W: Write>(
                         matched_at_current_time.insert(handle2);
                         if !change1.value.approx_eq(&value2, real_epsilon) {
                             has_differences = true;
-                            if let Some(names) = handle_to_names1.get(&change1.handle) {
-                                for name in names {
-                                    writeln!(writer, "{} {} {} != {}", t1, name, change1.value, value2)?;
-                                }
+                            for name in format_handle_names(change1.handle, map1, tree1) {
+                                writeln!(writer, "{} {} {} != {}", t1, name, change1.value, value2)?;
                             }
                         }
                     } else {
                         has_differences = true;
-                        if let Some(names) = handle_to_names1.get(&change1.handle) {
-                            for name in names {
-                                let msg = if saw_time_in_source2 {
-                                    "(not in file2)"
-                                } else {
-                                    "(missing time in file2)"
-                                };
-                                writeln!(writer, "{} {} {} {}", t1, name, change1.value, msg)?;
-                            }
+                        let msg = if saw_time_in_source2 {
+                            "(not in file2)"
+                        } else {
+                            "(missing time in file2)"
+                        };
+                        for name in format_handle_names(change1.handle, map1, tree1) {
+                            writeln!(writer, "{} {} {} {}", t1, name, change1.value, msg)?;
                         }
                     }
                 }
@@ -321,10 +329,8 @@ fn compare_signal_channels<W: Write>(
     // Anything still in the buffer was in file2 but never matched by file1.
     for ((time, handle), value) in &buffered2 {
         has_differences = true;
-        if let Some(names) = handle_to_names2.get(handle) {
-            for name in names {
-                writeln!(writer, "{} {} {} (only in file2)", time, name, value)?;
-            }
+        for name in format_handle_names(*handle, map2, tree2) {
+            writeln!(writer, "{} {} {} (only in file2)", time, name, value)?;
         }
     }
 
@@ -333,14 +339,12 @@ fn compare_signal_channels<W: Write>(
         for batch2 in &rx2 {
             has_differences = true;
             for change2 in &batch2.changes {
-                if let Some(names) = handle_to_names2.get(&change2.handle) {
-                    for name in names {
-                        writeln!(
-                            writer,
-                            "{} {} {} (only in file2)",
-                            batch2.time, name, change2.value
-                        )?;
-                    }
+                for name in format_handle_names(change2.handle, map2, tree2) {
+                    writeln!(
+                        writer,
+                        "{} {} {} (only in file2)",
+                        batch2.time, name, change2.value
+                    )?;
                 }
             }
         }
@@ -560,8 +564,6 @@ pub fn diff_wave_sets<W: Write>(
     end: Option<u64>,
     real_epsilon: Option<f64>,
 ) -> std::io::Result<bool> {
-    let handle_to_names1 = names_only(&hier1.signal_map, &hier1.names);
-    let handle_to_names2 = names_only(&hier2.signal_map, &hier2.names);
     let handle_mapping = build_handle_mapping(
         &hier1.signal_map,
         &hier1.names,
@@ -587,8 +589,10 @@ pub fn diff_wave_sets<W: Write>(
         rx1,
         rx2,
         &handle_mapping,
-        &handle_to_names1,
-        &handle_to_names2,
+        &hier1.signal_map,
+        &hier1.names,
+        &hier2.signal_map,
+        &hier2.names,
         real_epsilon,
     );
 
