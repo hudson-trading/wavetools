@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use wavetools::{
     compare_signal_meta, compare_signal_names, diff_wave_sets, open_and_read_wave_sets,
-    NameOptions, WaveHierarchy,
+    DiffOptions, NameOptions, WaveHierarchy,
 };
 
 const VERSION: &str = concat!(
@@ -171,36 +171,33 @@ fn run(args: Args) -> Result<bool, String> {
     set2_paths.extend(args.set2.iter().cloned());
 
     let name_options = NameOptions::default();
-    let paths1: Vec<&std::path::Path> = set1_paths.iter().map(|p| p.as_path()).collect();
-    let paths2: Vec<&std::path::Path> = set2_paths.iter().map(|p| p.as_path()).collect();
+    let paths1: Vec<&std::path::Path> = set1_paths.iter().map(PathBuf::as_path).collect();
+    let paths2: Vec<&std::path::Path> = set2_paths.iter().map(PathBuf::as_path).collect();
 
-    let (readers1, hier1, offsets1, readers2, hier2, offsets2) =
-        open_and_read_wave_sets(&paths1, &paths2, &name_options)?;
+    let sets = open_and_read_wave_sets(&paths1, &paths2, &name_options)?;
 
     // For name-mismatch reporting, use FILE1/FILE2 if given, else first --set file
     let label1 = args.file1.as_deref().unwrap_or(set1_paths[0].as_path());
     let label2 = args.file2.as_deref().unwrap_or(set2_paths[0].as_path());
 
-    let (only_in_1, only_in_2) = compare_signal_names(&hier1, &hier2);
+    let (only_in_1, only_in_2) = compare_signal_names(&sets.hier1, &sets.hier2);
     report_name_mismatch(label1, &only_in_1, label2, &only_in_2)?;
 
     let mut has_differences = false;
     if !args.no_attrs {
-        has_differences = report_meta_diffs(&hier1, &hier2);
+        has_differences = report_meta_diffs(&sets.hier1, &sets.hier2);
     }
 
+    let diff_options = DiffOptions {
+        start: args.start.unwrap_or(0),
+        end: args.end,
+        real_epsilon: args.epsilon,
+    };
     let mut stdout = std::io::stdout();
     let value_diffs = diff_wave_sets(
         &mut stdout,
-        readers1,
-        &hier1,
-        &offsets1,
-        readers2,
-        &hier2,
-        &offsets2,
-        args.start.unwrap_or(0),
-        args.end,
-        args.epsilon,
+        sets,
+        &diff_options,
     )
     .map_err(|e| format!("Failed to diff files: {}", e))?;
 

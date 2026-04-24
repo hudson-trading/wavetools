@@ -14,7 +14,7 @@ mod vcd;
 pub use cat::{write_signals_wave, write_signals_wave_multi, SignalOutputOptions};
 pub use diff::{
     compare_signal_meta, compare_signal_names, diff_wave_sets, diff_waves, open_and_read_wave_sets,
-    open_and_read_waves,
+    open_and_read_waves, DiffOptions, WaveSets,
 };
 
 use fst_reader::{
@@ -66,8 +66,7 @@ fn split_range_suffix(s: &str) -> (&str, &str) {
     }
     // Try " [" first (standard format), then bare "[" (no_range_space format)
     let split_pos = s.rfind(" [").or_else(|| {
-        let pos = s.rfind('[')?;
-        if pos > 0 { Some(pos) } else { None }
+        s.rfind('[').filter(|&pos| pos > 0)
     });
     if let Some(pos) = split_pos {
         // Extract bracket content and verify it's a numeric range
@@ -684,107 +683,109 @@ fn push_attr(signal_map: &mut SignalMap, handle: usize, attr: String) {
     }
 }
 
-/// Walk the VCD scope item tree and populate hierarchy maps.
-/// `scope_id` is the current position in the NameTree.
-#[allow(clippy::too_many_arguments)]
-fn walk_vcd_items(
-    items: &[vcd::ScopeItem],
-    scope_id: NameId,
-    tree: &mut NameTree,
-    signal_map: &mut SignalMap,
-    id_to_idx: &mut HashMap<vcd::IdCode, usize>,
-    enum_tables: &mut EnumTableRegistry,
-    enum_names: &mut EnumNameRegistry,
-    options: &NameOptions,
-) -> Result<(), String> {
-    let mut last_idx: Option<usize> = None;
-    for item in items {
-        match item {
-            vcd::ScopeItem::Scope(scope) => {
-                let child_id = tree.intern(scope_id, &scope.identifier);
-                walk_vcd_items(
-                    &scope.items,
-                    child_id,
-                    tree,
-                    signal_map,
-                    id_to_idx,
-                    enum_tables,
-                    enum_names,
-                    options,
-                )?;
-                last_idx = None;
-            }
-            vcd::ScopeItem::Var(var) => {
-                let next_idx = id_to_idx.len();
-                let idx = *id_to_idx.entry(var.code).or_insert(next_idx);
-                last_idx = Some(idx);
+/// Accumulates VCD hierarchy state while walking the scope tree.
+struct VcdHierarchyBuilder<'a> {
+    tree: NameTree,
+    signal_map: SignalMap,
+    id_to_idx: HashMap<vcd::IdCode, usize>,
+    enum_tables: EnumTableRegistry,
+    enum_names: EnumNameRegistry,
+    options: &'a NameOptions,
+}
 
-                let ref_name = if options.no_range_space {
-                    var.reference.replace(" [", "[")
-                } else {
-                    var.reference.clone()
-                };
-                let name = match &var.index {
-                    Some(vcd::ReferenceIndex::BitSelect(n)) => {
-                        format!("{} [{}]", ref_name, n)
-                    }
-                    Some(vcd::ReferenceIndex::Range(hi, lo)) => {
-                        if options.no_range_space {
-                            format!("{}[{}:{}]", ref_name, hi, lo)
-                        } else {
-                            format!("{} [{}:{}]", ref_name, hi, lo)
-                        }
-                    }
-                    None => ref_name,
-                };
-                let leaf = tree.intern(scope_id, &name);
-                let entry = signal_map.entry(idx).or_insert_with(|| SignalInfo {
-                    vars: Vec::new(),
-                });
-                entry.vars.push(VarEntry {
-                    name: leaf,
-                    meta: VarMeta {
-                        var_type: vcd_var_type_str(var.var_type),
-                        size: var.size,
-                        direction: IMPLICIT_DIRECTION,
-                    },
-                    attrs: Vec::new(),
-                });
-            }
-            vcd::ScopeItem::Attribute(attr) => {
-                // For misc 07 (enum table): distinguish definitions from references.
-                // Definitions have a non-empty, non-"" name with the full enum details.
-                // References have "" as the name and the handle as arg.
-                let is_enum_table = attr.attr_type == vcd::AttributeType::Misc
-                    && attr.subtype == "07";
-                if is_enum_table {
-                    let name_trimmed = attr.name.trim_matches('"');
-                    if !name_trimmed.is_empty() {
-                        // Enum table definition -- register it and attach to current signal
-                        if let Some(parsed) = parse_vcd_enum_table(&attr.name) {
-                            check_enum_conflict(enum_names, &parsed.0, &parsed.1)?;
-                            enum_tables.insert(attr.arg, parsed.clone());
-                            if let Some(idx) = last_idx {
-                                push_attr(signal_map, idx, format_enum_attr(&parsed.0, &parsed.1));
-                            }
-                        }
-                    } else {
-                        // Enum table reference -- resolve from registry
-                        if let Some(idx) = last_idx {
-                            if let Some((name, mapping)) = enum_tables.get(&attr.arg) {
-                                push_attr(signal_map, idx, format_enum_attr(name, mapping));
-                            }
-                        }
-                    }
-                } else if let Some(idx) = last_idx {
-                    let attr_str = format!("{} {}: {} {}", attr.attr_type, attr.subtype, attr.name, attr.arg);
-                    push_attr(signal_map, idx, attr_str);
-                }
-            }
-            _ => {}
+impl<'a> VcdHierarchyBuilder<'a> {
+    fn new(options: &'a NameOptions) -> Self {
+        Self {
+            tree: NameTree::new(),
+            signal_map: HashMap::new(),
+            id_to_idx: HashMap::new(),
+            enum_tables: HashMap::new(),
+            enum_names: HashMap::new(),
+            options,
         }
     }
-    Ok(())
+
+    fn walk(&mut self, items: &[vcd::ScopeItem], scope_id: NameId) -> Result<(), String> {
+        let mut last_idx: Option<usize> = None;
+        for item in items {
+            match item {
+                vcd::ScopeItem::Scope(scope) => {
+                    let child_id = self.tree.intern(scope_id, &scope.identifier);
+                    self.walk(&scope.items, child_id)?;
+                    last_idx = None;
+                }
+                vcd::ScopeItem::Var(var) => {
+                    let next_idx = self.id_to_idx.len();
+                    let idx = *self.id_to_idx.entry(var.code).or_insert(next_idx);
+                    last_idx = Some(idx);
+
+                    let ref_name = if self.options.no_range_space {
+                        var.reference.replace(" [", "[")
+                    } else {
+                        var.reference.clone()
+                    };
+                    let name = match &var.index {
+                        Some(vcd::ReferenceIndex::BitSelect(n)) => {
+                            format!("{} [{}]", ref_name, n)
+                        }
+                        Some(vcd::ReferenceIndex::Range(hi, lo)) => {
+                            if self.options.no_range_space {
+                                format!("{}[{}:{}]", ref_name, hi, lo)
+                            } else {
+                                format!("{} [{}:{}]", ref_name, hi, lo)
+                            }
+                        }
+                        None => ref_name,
+                    };
+                    let leaf = self.tree.intern(scope_id, &name);
+                    let entry = self.signal_map.entry(idx).or_insert_with(|| SignalInfo {
+                        vars: Vec::new(),
+                    });
+                    entry.vars.push(VarEntry {
+                        name: leaf,
+                        meta: VarMeta {
+                            var_type: vcd_var_type_str(var.var_type),
+                            size: var.size,
+                            direction: IMPLICIT_DIRECTION,
+                        },
+                        attrs: Vec::new(),
+                    });
+                }
+                vcd::ScopeItem::Attribute(attr) => {
+                    // For misc 07 (enum table): distinguish definitions from references.
+                    // Definitions have a non-empty, non-"" name with the full enum details.
+                    // References have "" as the name and the handle as arg.
+                    let is_enum_table = attr.attr_type == vcd::AttributeType::Misc
+                        && attr.subtype == "07";
+                    if is_enum_table {
+                        let name_trimmed = attr.name.trim_matches('"');
+                        if !name_trimmed.is_empty() {
+                            if let Some(parsed) = parse_vcd_enum_table(&attr.name) {
+                                check_enum_conflict(&mut self.enum_names, &parsed.0, &parsed.1)?;
+                                self.enum_tables.insert(attr.arg, parsed.clone());
+                                if let Some(idx) = last_idx {
+                                    push_attr(&mut self.signal_map, idx, format_enum_attr(&parsed.0, &parsed.1));
+                                }
+                            }
+                        } else if let Some(idx) = last_idx {
+                            if let Some((name, mapping)) = self.enum_tables.get(&attr.arg) {
+                                push_attr(&mut self.signal_map, idx, format_enum_attr(name, mapping));
+                            }
+                        }
+                    } else if let Some(idx) = last_idx {
+                        let attr_str = format!("{} {}: {} {}", attr.attr_type, attr.subtype, attr.name, attr.arg);
+                        push_attr(&mut self.signal_map, idx, attr_str);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn build(self) -> (SignalMap, HashMap<vcd::IdCode, usize>, NameTree) {
+        (self.signal_map, self.id_to_idx, self.tree)
+    }
 }
 
 /// Build hierarchy from a parsed VCD header
@@ -792,22 +793,10 @@ fn build_vcd_hierarchy(
     header: &vcd::Header,
     options: &NameOptions,
 ) -> Result<(SignalMap, HashMap<vcd::IdCode, usize>, NameTree), String> {
-    let mut signal_map: SignalMap = HashMap::new();
-    let mut id_to_idx: HashMap<vcd::IdCode, usize> = HashMap::new();
-    let mut tree = NameTree::new();
-    let mut enum_tables: EnumTableRegistry = HashMap::new();
-    let mut enum_names: EnumNameRegistry = HashMap::new();
-    walk_vcd_items(
-        &header.items,
-        tree.root(),
-        &mut tree,
-        &mut signal_map,
-        &mut id_to_idx,
-        &mut enum_tables,
-        &mut enum_names,
-        options,
-    )?;
-    Ok((signal_map, id_to_idx, tree))
+    let mut builder = VcdHierarchyBuilder::new(options);
+    let root = builder.tree.root();
+    builder.walk(&header.items, root)?;
+    Ok(builder.build())
 }
 
 /// Write all signal attributes from the hierarchy to a writer

@@ -104,21 +104,8 @@ fn test_meta_comparison_enum_files() {
 
 // ---- CLI tests for struct attrs ----
 
-fn run_wavecat_cli(args: &[&str]) -> std::process::Output {
-    let bin = env!("CARGO_BIN_EXE_wavecat");
-    std::process::Command::new(bin)
-        .args(args)
-        .output()
-        .expect("Failed to run wavecat")
-}
-
-fn run_wavediff_cli(args: &[&str]) -> std::process::Output {
-    let bin = env!("CARGO_BIN_EXE_wavediff");
-    std::process::Command::new(bin)
-        .args(args)
-        .output()
-        .expect("Failed to run wavediff")
-}
+mod common;
+use common::{run_wavecat_cli, run_wavediff_cli};
 
 #[test]
 fn test_cli_struct_attrs_output() {

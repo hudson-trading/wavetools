@@ -10,7 +10,7 @@ use std::path::Path;
 use wavetools::{
     merge_signal_maps, names_only, open_wave_file, open_wave_files, write_signals_wave_multi,
     diff_wave_sets, compare_signal_names, compare_signal_meta,
-    NameOptions, SignalOutputOptions, WaveHierarchy,
+    DiffOptions, NameOptions, SignalOutputOptions, WaveHierarchy, WaveSets,
 };
 
 fn sorted_names(hier: &WaveHierarchy) -> Vec<String> {
@@ -198,11 +198,11 @@ fn test_diff_set_vs_single_identical() {
     let (readers2, hier2, offsets2) = open_wave_files(&paths2, &NameOptions::default(), None).unwrap();
 
     let mut output = Vec::new();
+    let options = DiffOptions { start: 0, end: None, real_epsilon: None };
     let has_diff = diff_wave_sets(
         &mut output,
-        readers1, &hier1, &offsets1,
-        readers2, &hier2, &offsets2,
-        0, None, None,
+        WaveSets { readers1, hier1, offsets1, readers2, hier2, offsets2 },
+        &options,
     ).unwrap();
 
     assert!(!has_diff, "Expected no differences, got: {}", String::from_utf8_lossy(&output));
@@ -221,11 +221,11 @@ fn test_diff_set_value_difference() {
     let (readers2, hier2, offsets2) = open_wave_files(&paths2, &NameOptions::default(), None).unwrap();
 
     let mut output = Vec::new();
+    let options = DiffOptions { start: 0, end: None, real_epsilon: None };
     let has_diff = diff_wave_sets(
         &mut output,
-        readers1, &hier1, &offsets1,
-        readers2, &hier2, &offsets2,
-        0, None, None,
+        WaveSets { readers1, hier1, offsets1, readers2, hier2, offsets2 },
+        &options,
     ).unwrap();
 
     assert!(has_diff, "Expected differences");
@@ -265,21 +265,8 @@ fn test_diff_set_meta_comparison() {
 
 // ---- CLI tests ----
 
-fn run_wavecat_cli(args: &[&str]) -> std::process::Output {
-    let bin = env!("CARGO_BIN_EXE_wavecat");
-    std::process::Command::new(bin)
-        .args(args)
-        .output()
-        .expect("Failed to run wavecat")
-}
-
-fn run_wavediff_cli(args: &[&str]) -> std::process::Output {
-    let bin = env!("CARGO_BIN_EXE_wavediff");
-    std::process::Command::new(bin)
-        .args(args)
-        .output()
-        .expect("Failed to run wavediff")
-}
+mod common;
+use common::{run_wavecat_cli, run_wavediff_cli};
 
 #[test]
 fn test_cli_wavecat_multi_file_names() {

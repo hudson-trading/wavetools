@@ -16,6 +16,23 @@ use fst_reader::{FstFilter, FstSignalValue};
 
 use crate::{next_vcd_change, NameOptions, NameTree, SignalMap, WaveHierarchy, WaveReader};
 
+/// Options controlling diff behavior (time range, epsilon).
+pub struct DiffOptions {
+    pub start: u64,
+    pub end: Option<u64>,
+    pub real_epsilon: Option<f64>,
+}
+
+/// Result of opening two wave file sets for comparison.
+pub struct WaveSets {
+    pub readers1: Vec<WaveReader>,
+    pub hier1: WaveHierarchy,
+    pub offsets1: Vec<usize>,
+    pub readers2: Vec<WaveReader>,
+    pub hier2: WaveHierarchy,
+    pub offsets2: Vec<usize>,
+}
+
 /// Max queued batches per channel. Each batch holds up to BATCH_SIZE changes.
 /// With 64 batches of 4096 changes at ~23 bytes/value, each channel holds
 /// ~30 MB of backlog at most.
@@ -221,16 +238,13 @@ fn format_handle_names(handle: usize, map: &SignalMap, tree: &NameTree) -> Vec<S
 /// Consumes batches from `rx1` (file1) and `rx2` (file2), buffering as needed to
 /// match signals across potentially different orderings. Returns `true` if differences
 /// were found.
-#[allow(clippy::too_many_arguments)]
 fn compare_signal_channels<W: Write>(
     writer: &mut W,
     rx1: channel::Receiver<TimeBatch>,
     rx2: channel::Receiver<TimeBatch>,
     handle_mapping: &HashMap<usize, Vec<usize>>,
-    map1: &SignalMap,
-    tree1: &NameTree,
-    map2: &SignalMap,
-    tree2: &NameTree,
+    hier1: &WaveHierarchy,
+    hier2: &WaveHierarchy,
     real_epsilon: Option<f64>,
 ) -> std::io::Result<bool> {
     let mut has_differences = false;
@@ -299,7 +313,7 @@ fn compare_signal_channels<W: Write>(
                         matched_at_current_time.insert(handle2);
                         if !change1.value.approx_eq(&value2, real_epsilon) {
                             has_differences = true;
-                            for name in format_handle_names(change1.handle, map1, tree1) {
+                            for name in format_handle_names(change1.handle, &hier1.signal_map, &hier1.names) {
                                 writeln!(writer, "{} {} {} != {}", t1, name, change1.value, value2)?;
                             }
                         }
@@ -310,7 +324,7 @@ fn compare_signal_channels<W: Write>(
                         } else {
                             "(missing time in file2)"
                         };
-                        for name in format_handle_names(change1.handle, map1, tree1) {
+                        for name in format_handle_names(change1.handle, &hier1.signal_map, &hier1.names) {
                             writeln!(writer, "{} {} {} {}", t1, name, change1.value, msg)?;
                         }
                     }
@@ -329,7 +343,7 @@ fn compare_signal_channels<W: Write>(
     // Anything still in the buffer was in file2 but never matched by file1.
     for ((time, handle), value) in &buffered2 {
         has_differences = true;
-        for name in format_handle_names(*handle, map2, tree2) {
+        for name in format_handle_names(*handle, &hier2.signal_map, &hier2.names) {
             writeln!(writer, "{} {} {} (only in file2)", time, name, value)?;
         }
     }
@@ -339,7 +353,7 @@ fn compare_signal_channels<W: Write>(
         for batch2 in &rx2 {
             has_differences = true;
             for change2 in &batch2.changes {
-                for name in format_handle_names(change2.handle, map2, tree2) {
+                for name in format_handle_names(change2.handle, &hier2.signal_map, &hier2.names) {
                     writeln!(
                         writer,
                         "{} {} {} (only in file2)",
@@ -522,28 +536,25 @@ pub fn open_and_read_waves<P1: AsRef<Path>, P2: AsRef<Path>>(
 /// Compare two waveform files (any mix of FST/VCD) and write differences
 ///
 /// Returns `true` if differences were found.
-#[allow(clippy::too_many_arguments)]
 pub fn diff_waves<W: Write>(
     writer: &mut W,
     reader1: WaveReader,
-    hier1: &WaveHierarchy,
+    hier1: WaveHierarchy,
     reader2: WaveReader,
-    hier2: &WaveHierarchy,
-    start: u64,
-    end: Option<u64>,
-    real_epsilon: Option<f64>,
+    hier2: WaveHierarchy,
+    options: &DiffOptions,
 ) -> std::io::Result<bool> {
     diff_wave_sets(
         writer,
-        vec![reader1],
-        hier1,
-        &[0],
-        vec![reader2],
-        hier2,
-        &[0],
-        start,
-        end,
-        real_epsilon,
+        WaveSets {
+            readers1: vec![reader1],
+            hier1,
+            offsets1: vec![0],
+            readers2: vec![reader2],
+            hier2,
+            offsets2: vec![0],
+        },
+        options,
     )
 }
 
@@ -551,31 +562,31 @@ pub fn diff_waves<W: Write>(
 ///
 /// Each set is a vec of readers with corresponding handle offsets.
 /// Returns `true` if differences were found.
-#[allow(clippy::too_many_arguments)]
 pub fn diff_wave_sets<W: Write>(
     writer: &mut W,
-    readers1: Vec<WaveReader>,
-    hier1: &WaveHierarchy,
-    offsets1: &[usize],
-    readers2: Vec<WaveReader>,
-    hier2: &WaveHierarchy,
-    offsets2: &[usize],
-    start: u64,
-    end: Option<u64>,
-    real_epsilon: Option<f64>,
+    sets: WaveSets,
+    options: &DiffOptions,
 ) -> std::io::Result<bool> {
     let handle_mapping = build_handle_mapping(
-        &hier1.signal_map,
-        &hier1.names,
-        &hier2.signal_map,
-        &hier2.names,
+        &sets.hier1.signal_map,
+        &sets.hier1.names,
+        &sets.hier2.signal_map,
+        &sets.hier2.names,
     );
 
     let (tx1, rx1) = channel::bounded(CHANNEL_BOUND);
     let (tx2, rx2) = channel::bounded(CHANNEL_BOUND);
 
-    let offsets1 = offsets1.to_vec();
-    let offsets2 = offsets2.to_vec();
+    let start = options.start;
+    let end = options.end;
+    let WaveSets {
+        readers1,
+        hier1,
+        offsets1,
+        readers2,
+        hier2,
+        offsets2,
+    } = sets;
 
     let thread1 = std::thread::spawn(move || {
         send_merged_wave_changes(readers1, &offsets1, start, end, tx1);
@@ -589,11 +600,9 @@ pub fn diff_wave_sets<W: Write>(
         rx1,
         rx2,
         &handle_mapping,
-        &hier1.signal_map,
-        &hier1.names,
-        &hier2.signal_map,
-        &hier2.names,
-        real_epsilon,
+        &hier1,
+        &hier2,
+        options.real_epsilon,
     );
 
     thread1.join().unwrap();
@@ -603,23 +612,19 @@ pub fn diff_wave_sets<W: Write>(
 }
 
 /// Open two sets of waveform files and return readers and merged hierarchies
-#[allow(clippy::type_complexity)]
 pub fn open_and_read_wave_sets(
     paths1: &[&Path],
     paths2: &[&Path],
     options: &NameOptions,
-) -> Result<
-    (
-        Vec<WaveReader>,
-        WaveHierarchy,
-        Vec<usize>,
-        Vec<WaveReader>,
-        WaveHierarchy,
-        Vec<usize>,
-    ),
-    String,
-> {
-    let (r1, h1, o1) = crate::open_wave_files(paths1, options, None)?;
-    let (r2, h2, o2) = crate::open_wave_files(paths2, options, None)?;
-    Ok((r1, h1, o1, r2, h2, o2))
+) -> Result<WaveSets, String> {
+    let (readers1, hier1, offsets1) = crate::open_wave_files(paths1, options, None)?;
+    let (readers2, hier2, offsets2) = crate::open_wave_files(paths2, options, None)?;
+    Ok(WaveSets {
+        readers1,
+        hier1,
+        offsets1,
+        readers2,
+        hier2,
+        offsets2,
+    })
 }

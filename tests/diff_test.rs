@@ -6,7 +6,7 @@
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 
-use wavetools::{compare_signal_meta, compare_signal_names, diff_waves, open_and_read_waves, NameOptions};
+use wavetools::{compare_signal_meta, compare_signal_names, diff_waves, open_and_read_waves, DiffOptions, NameOptions};
 
 // Helper to check signal name differences
 fn check_signal_names(file1: &str, file2: &str) -> (bool, String) {
@@ -189,15 +189,14 @@ fn run_wave_diff_test(file1: &str, file2: &str) -> (bool, String) {
             .expect("Failed to open wave files");
 
     let mut output = Vec::new();
+    let options = DiffOptions { start: 0, end: None, real_epsilon: None };
     let has_differences = diff_waves(
         &mut output,
         reader1,
-        &hier1,
+        hier1,
         reader2,
-        &hier2,
-        0,
-        None,
-        None,
+        hier2,
+        &options,
     )
     .expect("Failed to diff files");
 
@@ -266,15 +265,14 @@ fn run_wave_diff_test_with_epsilon(
             .expect("Failed to open wave files");
 
     let mut output = Vec::new();
+    let options = DiffOptions { start: 0, end: None, real_epsilon };
     let has_differences = diff_waves(
         &mut output,
         reader1,
-        &hier1,
+        hier1,
         reader2,
-        &hier2,
-        0,
-        None,
-        real_epsilon,
+        hier2,
+        &options,
     )
     .expect("Failed to diff files");
 
@@ -363,15 +361,14 @@ fn run_wave_diff_test_with_range(
             .expect("Failed to open wave files");
 
     let mut output = Vec::new();
+    let options = DiffOptions { start, end, real_epsilon: None };
     let has_differences = diff_waves(
         &mut output,
         reader1,
-        &hier1,
+        hier1,
         reader2,
-        &hier2,
-        start,
-        end,
-        None,
+        hier2,
+        &options,
     )
     .expect("Failed to diff files");
 
@@ -673,33 +670,16 @@ fn test_diff_real_size_normalized_across_formats() {
 
 // -- --no-attrs CLI tests -----------------------------------------------------
 
-fn run_wavecat_cli(file: &str, extra_args: &[&str]) -> std::process::Output {
-    let bin = env!("CARGO_BIN_EXE_wavecat");
-    std::process::Command::new(bin)
-        .args(extra_args)
-        .arg(file)
-        .output()
-        .expect("Failed to run wavecat")
-}
-
-fn run_wavediff_cli(file1: &str, file2: &str, extra_args: &[&str]) -> std::process::Output {
-    let bin = env!("CARGO_BIN_EXE_wavediff");
-    std::process::Command::new(bin)
-        .args(extra_args)
-        .arg(file1)
-        .arg(file2)
-        .output()
-        .expect("Failed to run wavediff")
-}
+mod common;
+use common::{run_wavecat_cli, run_wavediff_cli};
 
 #[test]
 fn test_cli_attr_diff_nonzero_exit() {
     // Different attrs, same values -- should exit 1
-    let output = run_wavediff_cli(
+    let output = run_wavediff_cli(&[
         "tests/data/enum_attrs.a.vcd",
         "tests/data/enum_attrs.b.vcd",
-        &[],
-    );
+    ]);
     assert_eq!(output.status.code(), Some(1), "Attr diffs should cause exit 1");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("top.state"), "stderr should mention top.state: {}", stderr);
@@ -709,11 +689,11 @@ fn test_cli_attr_diff_nonzero_exit() {
 #[test]
 fn test_cli_no_attrs_ignores_attr_diff() {
     // Different attrs, same values -- --no-attrs should make it exit 0
-    let output = run_wavediff_cli(
+    let output = run_wavediff_cli(&[
+        "--no-attrs",
         "tests/data/enum_attrs.a.vcd",
         "tests/data/enum_attrs.b.vcd",
-        &["--no-attrs"],
-    );
+    ]);
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -725,11 +705,11 @@ fn test_cli_no_attrs_ignores_attr_diff() {
 #[test]
 fn test_cli_no_attrs_ignores_missing_attrs() {
     // Attrs in one file, none in the other -- --no-attrs should exit 0
-    let output = run_wavediff_cli(
+    let output = run_wavediff_cli(&[
+        "--no-attrs",
         "tests/data/enum_attrs.a.vcd",
         "tests/data/enum_attrs.missing.vcd",
-        &["--no-attrs"],
-    );
+    ]);
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -741,11 +721,11 @@ fn test_cli_no_attrs_ignores_missing_attrs() {
 #[test]
 fn test_cli_no_attrs_still_detects_value_diffs() {
     // --no-attrs skips metadata but should still catch value differences
-    let output = run_wavediff_cli(
+    let output = run_wavediff_cli(&[
+        "--no-attrs",
         "tests/data/counter.vcd",
         "tests/data/counter.value.diff.vcd",
-        &["--no-attrs"],
-    );
+    ]);
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -793,7 +773,7 @@ fn test_enum_no_conflict_succeeds() {
 
 #[test]
 fn test_cli_wavecat_enum_conflict_exits_with_error() {
-    let output = run_wavecat_cli("tests/data/error/enum_conflict.vcd", &["--names"]);
+    let output = run_wavecat_cli(&["--names", "tests/data/error/enum_conflict.vcd"]);
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -809,11 +789,10 @@ fn test_cli_wavecat_enum_conflict_exits_with_error() {
 
 #[test]
 fn test_cli_wavediff_enum_conflict_exits_with_error() {
-    let output = run_wavediff_cli(
+    let output = run_wavediff_cli(&[
         "tests/data/error/enum_conflict.vcd",
         "tests/data/enum_no_conflict.vcd",
-        &[],
-    );
+    ]);
     assert_eq!(
         output.status.code(),
         Some(2),

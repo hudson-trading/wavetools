@@ -124,7 +124,7 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
     };
     let patterns = parse_filter_patterns(&args.filter)?;
 
-    let paths: Vec<&std::path::Path> = args.file.iter().map(|p| p.as_path()).collect();
+    let paths: Vec<&std::path::Path> = args.file.iter().map(std::path::PathBuf::as_path).collect();
     let (readers, mut hierarchy, offsets) = open_wave_files(&paths, &name_options, args.format)?;
 
     apply_filters(&mut hierarchy, &patterns);
