@@ -161,6 +161,7 @@ fn test_signals_time_pound_vcd() {
 fn test_names_with_range_default() {
     let output = read_names_with_options("tests/data/range.vcd", &NameOptions::default());
     let expected = "\
+t.\\a.b [3:0]
 t.clk
 t.dat [3:0]
 ";
@@ -172,6 +173,7 @@ fn test_names_with_range_no_space() {
     let options = NameOptions { no_range_space: true };
     let output = read_names_with_options("tests/data/range.vcd", &options);
     let expected = "\
+t.\\a.b [3:0]
 t.clk
 t.dat[3:0]
 ";
