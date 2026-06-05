@@ -93,9 +93,13 @@ fn format_segment(s: &str) -> String {
     } else if range_suffix.is_empty() {
         format!("\\{} ", base)
     } else {
-        // The trailing space of the escaped identifier replaces the original
-        // space before the range bracket: "\a0.cyc [31:0]"
-        format!("\\{} {}", base, &range_suffix[1..])
+        // Escaped identifiers require a trailing space. Reuse it as the
+        // separator before the range, whether the input had one or not.
+        format!(
+            "\\{} {}",
+            base,
+            range_suffix.strip_prefix(' ').unwrap_or(range_suffix)
+        )
     }
 }
 
