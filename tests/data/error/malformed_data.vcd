@@ -1,0 +1,13 @@
+$date now $end
+$version test $end
+$timescale 1 ns $end
+$scope module top $end
+$var wire 1 ! clk $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+#10
+q!
+#20
+1!

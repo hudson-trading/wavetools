@@ -527,37 +527,40 @@ fn vcd_value_char(v: vcd::Value) -> char {
 }
 
 /// Read the next signal change from a VCD parser, skipping non-change commands
-pub(crate) fn next_vcd_change(vcd_data: &mut VcdData) -> Option<(u64, usize, String)> {
-    while let Some(Ok(cmd)) = vcd_data.parser.next() {
+pub(crate) fn next_vcd_change(
+    vcd_data: &mut VcdData,
+) -> std::io::Result<Option<(u64, usize, String)>> {
+    while let Some(cmd) = vcd_data.parser.next() {
+        let cmd = cmd?;
         match cmd {
             vcd::Command::Timestamp(t) => {
                 vcd_data.current_time = t;
             }
             vcd::Command::ChangeScalar(id, val) => {
                 if let Some(&idx) = vcd_data.id_to_idx.get(&id) {
-                    return Some((vcd_data.current_time, idx, vcd_value_char(val).to_string()));
+                    return Ok(Some((vcd_data.current_time, idx, vcd_value_char(val).to_string())));
                 }
             }
             vcd::Command::ChangeVector(id, ref vec) => {
                 if let Some(&idx) = vcd_data.id_to_idx.get(&id) {
                     let s: String = vec.iter().map(vcd_value_char).collect();
-                    return Some((vcd_data.current_time, idx, s));
+                    return Ok(Some((vcd_data.current_time, idx, s)));
                 }
             }
             vcd::Command::ChangeReal(id, val) => {
                 if let Some(&idx) = vcd_data.id_to_idx.get(&id) {
-                    return Some((vcd_data.current_time, idx, val.to_string()));
+                    return Ok(Some((vcd_data.current_time, idx, val.to_string())));
                 }
             }
             vcd::Command::ChangeString(id, ref s) => {
                 if let Some(&idx) = vcd_data.id_to_idx.get(&id) {
-                    return Some((vcd_data.current_time, idx, s.clone()));
+                    return Ok(Some((vcd_data.current_time, idx, s.clone())));
                 }
             }
             _ => {}
         }
     }
-    None
+    Ok(None)
 }
 
 /// Registry of enum table definitions, keyed by handle ID.

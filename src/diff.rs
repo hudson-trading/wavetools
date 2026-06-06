@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::io::{BufRead, Seek, Write};
+use std::io::{self, BufRead, Seek, Write};
 use std::path::Path;
 
 use crossbeam_channel as channel;
@@ -200,10 +200,10 @@ fn read_and_send_signals<R: BufRead + Seek>(
     filter: fst_reader::FstFilter,
     handle_offset: usize,
     tx: channel::Sender<TimeBatch>,
-) {
+) -> io::Result<()> {
     let mut batch = Vec::with_capacity(BATCH_SIZE);
     let mut batch_time: u64 = 0;
-    let _ = fst_reader.read_signals(&filter, |time, handle, value| {
+    let read_result = fst_reader.read_signals(&filter, |time, handle, value| {
         if time < filter.start {
             return;
         }
@@ -221,9 +221,11 @@ fn read_and_send_signals<R: BufRead + Seek>(
             value: OwnedSignalValue::from_fst_value(value),
         });
     });
+    read_result.map_err(|e| io::Error::other(format!("Failed to read signals: {}", e)))?;
     if !batch.is_empty() {
         let _ = tx.send(TimeBatch { time: batch_time, changes: batch });
     }
+    Ok(())
 }
 
 /// Format signal names for a handle on-demand from SignalMap + NameTree.
@@ -375,7 +377,7 @@ fn send_wave_changes(
     start: u64,
     end: Option<u64>,
     tx: channel::Sender<TimeBatch>,
-) {
+) -> io::Result<()> {
     match reader {
         WaveReader::Fst(fst_reader) => {
             let filter = FstFilter {
@@ -383,12 +385,12 @@ fn send_wave_changes(
                 end,
                 include: None,
             };
-            read_and_send_signals(*fst_reader, filter, handle_offset, tx);
+            read_and_send_signals(*fst_reader, filter, handle_offset, tx)?;
         }
         WaveReader::Vcd(mut vcd_data) => {
             let mut batch = Vec::with_capacity(BATCH_SIZE);
             let mut batch_time: u64 = 0;
-            while let Some((time, handle, value_str)) = next_vcd_change(&mut vcd_data) {
+            while let Some((time, handle, value_str)) = next_vcd_change(&mut vcd_data)? {
                 if time < start {
                     continue;
                 }
@@ -411,6 +413,7 @@ fn send_wave_changes(
             }
         }
     }
+    Ok(())
 }
 
 /// Send changes from multiple WaveReaders through a single channel, merging in time order.
@@ -423,16 +426,15 @@ fn send_merged_wave_changes(
     start: u64,
     end: Option<u64>,
     tx: channel::Sender<TimeBatch>,
-) {
+) -> io::Result<()> {
     if readers.len() == 1 {
-        send_wave_changes(
+        return send_wave_changes(
             readers.into_iter().next().unwrap(),
             offsets[0],
             start,
             end,
             tx,
         );
-        return;
     }
 
     // Spawn a thread per reader, each sending TimeBatches to its own channel.
@@ -442,7 +444,7 @@ fn send_merged_wave_changes(
     for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
         let (inner_tx, inner_rx) = channel::bounded(CHANNEL_BOUND);
         threads.push(std::thread::spawn(move || {
-            send_wave_changes(reader, offset, start, end, inner_tx);
+            send_wave_changes(reader, offset, start, end, inner_tx)
         }));
         inner_rxs.push(inner_rx);
     }
@@ -466,8 +468,14 @@ fn send_merged_wave_changes(
     }
 
     for t in threads {
-        t.join().unwrap();
+        match t.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Err(io::Error::other("wavediff reader thread panicked")),
+        }
     }
+
+    Ok(())
 }
 
 /// Compare metadata and attributes for signals that share the same name across two files.
@@ -589,10 +597,10 @@ pub fn diff_wave_sets<W: Write>(
     } = sets;
 
     let thread1 = std::thread::spawn(move || {
-        send_merged_wave_changes(readers1, &offsets1, start, end, tx1);
+        send_merged_wave_changes(readers1, &offsets1, start, end, tx1)
     });
     let thread2 = std::thread::spawn(move || {
-        send_merged_wave_changes(readers2, &offsets2, start, end, tx2);
+        send_merged_wave_changes(readers2, &offsets2, start, end, tx2)
     });
 
     let result = compare_signal_channels(
@@ -605,10 +613,20 @@ pub fn diff_wave_sets<W: Write>(
         options.real_epsilon,
     );
 
-    thread1.join().unwrap();
-    thread2.join().unwrap();
+    let thread1_result = match thread1.join() {
+        Ok(r) => r,
+        Err(_) => Err(io::Error::other("wavediff set1 reader thread panicked")),
+    };
+    let thread2_result = match thread2.join() {
+        Ok(r) => r,
+        Err(_) => Err(io::Error::other("wavediff set2 reader thread panicked")),
+    };
 
-    result
+    let has_differences = result?;
+    thread1_result?;
+    thread2_result?;
+
+    Ok(has_differences)
 }
 
 /// Open two sets of waveform files and return readers and merged hierarchies

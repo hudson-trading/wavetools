@@ -6,7 +6,7 @@
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 
-use std::io::{BufRead, Seek, Write};
+use std::io::{self, BufRead, Seek, Write};
 
 use crossbeam_channel as channel;
 use fst_reader::{FstFilter, FstSignalHandle, FstSignalValue};
@@ -175,7 +175,7 @@ fn send_cat_changes(
     start: u64,
     end: Option<u64>,
     tx: channel::Sender<CatChange>,
-) {
+) -> io::Result<()> {
     match &mut reader {
         WaveReader::Fst(fst_reader) => {
             let filter = FstFilter {
@@ -183,7 +183,7 @@ fn send_cat_changes(
                 end,
                 include: None,
             };
-            let _ = fst_reader.read_signals(&filter, |time, handle, value| {
+            let read_result = fst_reader.read_signals(&filter, |time, handle, value| {
                 if time < filter.start {
                     return;
                 }
@@ -204,9 +204,10 @@ fn send_cat_changes(
                     value: value_str,
                 });
             });
+            read_result.map_err(|e| io::Error::other(format!("Failed to read signals: {}", e)))?;
         }
         WaveReader::Vcd(vcd_data) => {
-            while let Some((time, handle_idx, value_str)) = next_vcd_change(vcd_data) {
+            while let Some((time, handle_idx, value_str)) = next_vcd_change(vcd_data)? {
                 if time < start {
                     continue;
                 }
@@ -223,6 +224,7 @@ fn send_cat_changes(
             }
         }
     }
+    Ok(())
 }
 
 /// Write signal values from multiple WaveReaders, merging their outputs in time order.
@@ -258,7 +260,7 @@ pub fn write_signals_wave_multi<W: Write>(
     for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
         let (tx, rx) = channel::bounded(CHANNEL_BOUND);
         threads.push(std::thread::spawn(move || {
-            send_cat_changes(reader, offset, start, end, tx);
+            send_cat_changes(reader, offset, start, end, tx)
         }));
         rxs.push(rx);
     }
@@ -266,7 +268,7 @@ pub fn write_signals_wave_multi<W: Write>(
     let mut current_time: Option<u64> = None;
     let mut batch: Vec<(String, String)> = Vec::new();
 
-    crate::kway_merge_channels(&rxs, |c| c.time, |change| {
+    let merge_result = crate::kway_merge_channels(&rxs, |c| c.time, |change| {
         if options.sort {
             if let Some(prev_time) = current_time {
                 if prev_time != change.time {
@@ -291,16 +293,36 @@ pub fn write_signals_wave_multi<W: Write>(
             }
         }
         Ok(())
-    })?;
+    });
+
+    if merge_result.is_err() {
+        drop(rxs);
+    }
+
+    let mut thread_result = Ok(());
+    for t in threads {
+        match t.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if thread_result.is_ok() {
+                    thread_result = Err(e);
+                }
+            }
+            Err(_) => {
+                if thread_result.is_ok() {
+                    thread_result = Err(io::Error::other("wavecat reader thread panicked"));
+                }
+            }
+        }
+    }
+
+    merge_result?;
+    thread_result?;
 
     if options.sort {
         if let Some(time) = current_time {
             flush_signal_batch(writer, time, &mut batch, options.time_pound)?;
         }
-    }
-
-    for t in threads {
-        t.join().unwrap();
     }
 
     Ok(())
@@ -317,7 +339,7 @@ fn write_vcd_signals<W: Write>(
     let mut current_batch_time: Option<u64> = None;
     let mut batch: Vec<(String, String)> = Vec::new();
 
-    while let Some((time, handle_idx, value_str)) = next_vcd_change(vcd_data) {
+    while let Some((time, handle_idx, value_str)) = next_vcd_change(vcd_data)? {
         if time < start {
             continue;
         }
