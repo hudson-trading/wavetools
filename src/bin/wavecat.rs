@@ -119,6 +119,12 @@ fn main() {
 }
 
 fn process_wave_file(args: &Args) -> Result<(), String> {
+    if let (Some(s), Some(e)) = (args.start, args.end) {
+        if s > e {
+            return Err(format!("--start ({}) must be <= --end ({})", s, e));
+        }
+    }
+
     let name_options = NameOptions {
         no_range_space: args.no_range_space,
     };

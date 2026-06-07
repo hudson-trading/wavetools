@@ -312,6 +312,22 @@ fn test_cli_wavecat_multi_file_attrs() {
 }
 
 #[test]
+fn test_cli_wavecat_start_after_end_fails() {
+    let output = run_wavecat_cli(&[
+        "--start", "40",
+        "--end", "10",
+        "tests/data/counter.vcd",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "Expected exit 1");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("--start (40) must be <= --end (10)"),
+        "Expected invalid range error: {}",
+        stderr
+    );
+}
+
+#[test]
 fn test_cli_wavediff_set_no_diff() {
     // {set_clk + set_counter} vs {counter} = identical, exit 0
     let output = run_wavediff_cli(&[
