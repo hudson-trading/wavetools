@@ -94,9 +94,9 @@ fn report_name_mismatch(
     only_in_1: &std::collections::HashSet<String>,
     file2: &std::path::Path,
     only_in_2: &std::collections::HashSet<String>,
-) -> Result<(), String> {
+) -> bool {
     if only_in_1.is_empty() && only_in_2.is_empty() {
-        return Ok(());
+        return false;
     }
     eprintln!("Signal name mismatch:");
     let print_sorted = |label: std::path::Display, names: &std::collections::HashSet<String>| {
@@ -113,7 +113,7 @@ fn report_name_mismatch(
     if !only_in_2.is_empty() {
         print_sorted(file2.display(), only_in_2);
     }
-    Err("Signal names differ between files".to_string())
+    true
 }
 
 fn report_meta_diffs(
@@ -181,11 +181,10 @@ fn run(args: Args) -> Result<bool, String> {
     let label2 = args.file2.as_deref().unwrap_or(set2_paths[0].as_path());
 
     let (only_in_1, only_in_2) = compare_signal_names(&sets.hier1, &sets.hier2);
-    report_name_mismatch(label1, &only_in_1, label2, &only_in_2)?;
+    let mut has_differences = report_name_mismatch(label1, &only_in_1, label2, &only_in_2);
 
-    let mut has_differences = false;
     if !args.no_attrs {
-        has_differences = report_meta_diffs(&sets.hier1, &sets.hier2);
+        has_differences |= report_meta_diffs(&sets.hier1, &sets.hier2);
     }
 
     let diff_options = DiffOptions {

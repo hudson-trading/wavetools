@@ -336,6 +336,20 @@ fn test_cli_wavediff_set_value_diff() {
 }
 
 #[test]
+fn test_cli_wavediff_name_mismatch_exits_difference() {
+    let output = run_wavediff_cli(&[
+        "tests/data/counter.fst",
+        "tests/data/counter.new_sig.diff.fst",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "Expected exit 1");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Signal name mismatch"), "Expected name mismatch: {}", stderr);
+    assert!(stderr.contains("t.the_sub.new_sig"), "Expected missing signal: {}", stderr);
+    assert!(!stderr.contains("Error:"), "Name mismatches should not use the error path: {}", stderr);
+}
+
+#[test]
 fn test_cli_wavediff_set_conflict() {
     // set_clk + set_overlap in set1 = duplicate signal, exit 2
     let output = run_wavediff_cli(&[
