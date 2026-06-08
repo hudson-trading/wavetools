@@ -484,6 +484,21 @@ fn test_diff_epsilon_wide_bitvector_no_false_positive() {
     assert!(!has_diff, "Identical wide bit-vectors should not differ with epsilon. Output:\n{}", output);
 }
 
+#[test]
+fn test_diff_epsilon_does_not_mask_bitvector_difference() {
+    let (has_diff, output) = run_wave_diff_test_with_epsilon(
+        "tests/data/counter.vcd",
+        "tests/data/counter.value.diff.vcd",
+        Some(1000.0),
+    );
+    assert!(has_diff, "Bit-vector differences should stay exact with epsilon. Output:\n{}", output);
+
+    let expected = "\
+10 t.the_sub.cyc_plus_one 00000000000000000000000000000010 != 00000000000000000000000000000100
+";
+    assert_eq!(output, expected, "Expected exact diff output for VCD value diff");
+}
+
 // -- Metadata comparison tests ------------------------------------------------
 
 #[test]

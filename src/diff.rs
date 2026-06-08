@@ -81,8 +81,13 @@ impl OwnedSignalValue {
     }
 
     /// Compare two values, using epsilon for real-valued signals when provided.
-    fn approx_eq(&self, other: &Self, real_epsilon: Option<f64>) -> bool {
-        match (self, other, real_epsilon) {
+    fn approx_eq(
+        &self,
+        other: &Self,
+        real_epsilon: Option<f64>,
+        use_real_epsilon: bool,
+    ) -> bool {
+        match (self, other, real_epsilon.filter(|_| use_real_epsilon)) {
             (OwnedSignalValue::Real(a), OwnedSignalValue::Real(b), Some(eps)) => {
                 (a - b).abs() <= eps
             }
@@ -106,6 +111,24 @@ impl OwnedSignalValue {
             _ => self == other,
         }
     }
+}
+
+fn is_real_var_type(var_type: &str) -> bool {
+    matches!(var_type, "real" | "realtime" | "shortreal" | "real_parameter")
+}
+
+fn handle_is_real(map: &SignalMap, handle: usize) -> bool {
+    map.get(&handle)
+        .is_some_and(|info| info.vars.iter().any(|v| is_real_var_type(v.meta.var_type)))
+}
+
+fn handles_are_real(
+    hier1: &WaveHierarchy,
+    handle1: usize,
+    hier2: &WaveHierarchy,
+    handle2: usize,
+) -> bool {
+    handle_is_real(&hier1.signal_map, handle1) && handle_is_real(&hier2.signal_map, handle2)
 }
 
 /// Compare signal names between two waveform files and return the differences
@@ -315,7 +338,9 @@ fn compare_signal_channels<W: Write>(
 
                     if let Some(value2) = found {
                         matched_at_current_time.insert(handle2);
-                        if !change1.value.approx_eq(&value2, real_epsilon) {
+                        let use_real_epsilon =
+                            handles_are_real(hier1, change1.handle, hier2, handle2);
+                        if !change1.value.approx_eq(&value2, real_epsilon, use_real_epsilon) {
                             has_differences = true;
                             for name in format_handle_names(change1.handle, &hier1.signal_map, &hier1.names) {
                                 writeln!(writer, "{} {} {} != {}", t1, name, change1.value, value2)?;
