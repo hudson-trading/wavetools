@@ -161,7 +161,11 @@ fn build_handle_mapping(
             let segments = tree_a.segments(var.name);
             if let Some(b_name_id) = tree_b.find(&segments) {
                 if let Some(b_handles) = name_id_to_handles_b.get(&b_name_id) {
-                    handles_b.extend(b_handles);
+                    for &handle_b in b_handles {
+                        if !handles_b.contains(&handle_b) {
+                            handles_b.push(handle_b);
+                        }
+                    }
                 }
             }
         }

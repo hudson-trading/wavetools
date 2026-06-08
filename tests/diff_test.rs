@@ -347,6 +347,20 @@ fn test_diff_vcd_aliased_idcodes_reverse_no_diff() {
     assert!(!has_diff, "Reversed aliased vs unique VCD id codes should not differ. Output:\n{}", output);
 }
 
+#[test]
+fn test_diff_vcd_aliased_idcodes_reports_each_name_once() {
+    let (has_diff, output) = run_wave_diff_test(
+        "tests/data/idcode_a.vcd",
+        "tests/data/error/idcode_a_value_diff.vcd",
+    );
+    assert!(has_diff, "Changed aliased id should differ");
+    let expected = "\
+0 m.s0.a 0 != 1
+0 m.s1.c 0 != 1
+";
+    assert_eq!(output, expected, "Expected one diff per aliased signal name");
+}
+
 // -- Time range filtering tests -----------------------------------------------
 
 fn run_wave_diff_test_with_range(
