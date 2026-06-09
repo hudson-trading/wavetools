@@ -1,0 +1,78 @@
+# ------------------------------------------------------------------------------
+# verilator-integration.yml
+# Build wavediff and run Verilator's transitive trace_identical integration
+# suite against it. Guards against regressions visible to Verilator's CI, which
+# consumes wavediff as its VCD/FST diff backend.
+#
+# Manual runs via "Run workflow" accept an optional verilator_tag input to pin
+# a specific release; otherwise the latest v* tag on origin is used.
+#
+# SPDX-FileCopyrightText: Hudson River Trading
+# SPDX-License-Identifier: MIT
+# ------------------------------------------------------------------------------
+
+name: Verilator Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      verilator_tag:
+        description: "Verilator release tag to test (default: latest v*)"
+        required: false
+        default: ""
+
+jobs:
+  verilator-integration:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build wavediff
+        run: cargo build --release --bin wavediff
+
+      - name: Resolve verilator tag
+        id: tag
+        run: |
+          tag="${{ github.event.inputs.verilator_tag }}"
+          if [[ -z "$tag" ]]; then
+            tag="$(tests/verilator_integration/run.sh --print-latest-tag)"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Verilator tag: $tag"
+
+      - name: Install apt build/test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            autoconf bison ccache flex g++ gdb gtkwave help2man jq lcov make \
+            libfl-dev libsystemc libsystemc-dev mold python3-venv z3
+
+      - name: Cache verilator build
+        id: verilator-cache
+        uses: actions/cache@v4
+        with:
+          path: target/verilator-integration/verilator
+          key: verilator-${{ runner.os }}-${{ steps.tag.outputs.tag }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-verilator-${{ runner.os }}-${{ steps.tag.outputs.tag }}-${{ hashFiles('target/verilator-integration/verilator/python-dev-requirements.txt') }}
+          restore-keys: |
+            pip-verilator-${{ runner.os }}-${{ steps.tag.outputs.tag }}-
+            pip-verilator-${{ runner.os }}-
+
+      - name: Run trace_identical integration suite
+        env:
+          VERILATOR_TAG: ${{ steps.tag.outputs.tag }}
+        run: tests/verilator_integration/run.sh
