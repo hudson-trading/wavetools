@@ -27,15 +27,17 @@ set -euo pipefail
 log() { printf '==> %s\n' "$*" >&2; }
 
 resolve_latest_tag() {
-    local tag
-    tag="$(git ls-remote --tags --refs --sort=-v:refname \
-        https://github.com/verilator/verilator.git 'refs/tags/v*' \
-        | head -n1 | sed -E 's@.*refs/tags/@@')"
-    if [[ -z "$tag" ]]; then
+    # Capture the full listing before slicing -- piping into `head` would
+    # SIGPIPE git ls-remote and, with pipefail, surface as exit 141.
+    local out first
+    out="$(git ls-remote --tags --refs --sort=-v:refname \
+        https://github.com/verilator/verilator.git 'refs/tags/v*')"
+    if [[ -z "$out" ]]; then
         echo "error: could not determine latest verilator tag" >&2
         return 1
     fi
-    printf '%s\n' "$tag"
+    first="${out%%$'\n'*}"          # first line of output
+    printf '%s\n' "${first##*refs/tags/}"
 }
 
 if [[ "${1:-}" == "--print-latest-tag" ]]; then
