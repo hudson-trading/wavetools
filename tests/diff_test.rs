@@ -138,6 +138,22 @@ fn test_edge_time_diff() {
 }
 
 #[test]
+fn test_buffered_file2_only_diffs_are_sorted() {
+    let (has_diff, output) = run_wave_diff_test(
+        "tests/data/buffered_file2_base.vcd",
+        "tests/data/buffered_file2_extra.vcd",
+    );
+    assert!(has_diff, "file2-only intermediate changes should differ");
+
+    let expected = "\
+10 t.a 1 (only in file2)
+10 t.b 1 (only in file2)
+10 t.c 1 (only in file2)
+";
+    assert_eq!(output, expected, "Expected deterministic file2-only diff output");
+}
+
+#[test]
 fn test_new_sig_diff() {
     let (has_name_diff, msg) = check_signal_names(
         "tests/data/counter.fst",
