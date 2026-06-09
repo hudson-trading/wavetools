@@ -8,7 +8,7 @@
 
 mod cat;
 mod diff;
-#[allow(dead_code, unused_imports, clippy::manual_repeat_n, mismatched_lifetime_syntaxes)]
+#[allow(dead_code, unused_imports, clippy::manual_repeat_n)]
 mod vcd;
 
 pub use cat::{write_signals_wave, write_signals_wave_multi, SignalOutputOptions};
@@ -530,7 +530,7 @@ fn vcd_value_char(v: vcd::Value) -> char {
 pub(crate) fn next_vcd_change(
     vcd_data: &mut VcdData,
 ) -> std::io::Result<Option<(u64, usize, String)>> {
-    while let Some(cmd) = vcd_data.parser.next() {
+    for cmd in vcd_data.parser.by_ref() {
         let cmd = cmd?;
         match cmd {
             vcd::Command::Timestamp(t) => {

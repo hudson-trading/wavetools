@@ -89,7 +89,7 @@ impl Vector {
     }
 
     /// Returns an iterator over the values in the vector.
-    pub fn iter(&self) -> VectorIter {
+    pub fn iter(&self) -> VectorIter<'_> {
         VectorIter(self.0.iter())
     }
 
