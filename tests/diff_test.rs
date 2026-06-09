@@ -768,6 +768,41 @@ fn test_cli_no_attrs_still_detects_value_diffs() {
     );
 }
 
+#[test]
+fn test_cli_wavecat_malformed_vcd_data_exits_with_error() {
+    let output = run_wavecat_cli(&["tests/data/error/malformed_data.vcd"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "wavecat should exit 1 on malformed VCD data"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unexpected character"),
+        "wavecat stderr should report the parser error: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_cli_wavediff_malformed_vcd_data_exits_with_error() {
+    let output = run_wavediff_cli(&[
+        "tests/data/error/malformed_data.vcd",
+        "tests/data/error/malformed_data.vcd",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "wavediff should exit 2 on malformed VCD data"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unexpected character"),
+        "wavediff stderr should report the parser error: {}",
+        stderr
+    );
+}
+
 // -- Enum conflict detection tests --------------------------------------------
 
 #[test]
