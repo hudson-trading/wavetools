@@ -372,11 +372,21 @@ fn compare_signal_channels<W: Write>(
     }
 
     // Anything still in the buffer was in file2 but never matched by file1.
-    for ((time, handle), value) in &buffered2 {
+    // Sort rows before printing so diff output does not depend on HashMap
+    // iteration order.
+    let owned: Vec<((u64, usize), OwnedSignalValue)> = buffered2.drain().collect();
+    if !owned.is_empty() {
         has_differences = true;
+    }
+    let mut file2_only_rows: Vec<(u64, String, usize)> = Vec::new();
+    for (idx, ((time, handle), _)) in owned.iter().enumerate() {
         for name in format_handle_names(*handle, &hier2.signal_map, &hier2.names) {
-            writeln!(writer, "{} {} {} (only in file2)", time, name, value)?;
+            file2_only_rows.push((*time, name, idx));
         }
+    }
+    file2_only_rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    for (time, name, idx) in file2_only_rows {
+        writeln!(writer, "{} {} {} (only in file2)", time, name, owned[idx].1)?;
     }
 
     // Drain any remaining file2 batches we never read from the channel.
