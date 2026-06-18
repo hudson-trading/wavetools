@@ -372,9 +372,14 @@ fn compare_signal_channels<W: Write>(
     }
 
     // Anything still in the buffer was in file2 but never matched by file1.
+    // Drop entries whose handles were filtered out of hier2 -- the streaming
+    // reader still emits them but they're not part of the comparison set.
     // Sort rows before printing so diff output does not depend on HashMap
     // iteration order.
-    let owned: Vec<((u64, usize), OwnedSignalValue)> = buffered2.drain().collect();
+    let owned: Vec<((u64, usize), OwnedSignalValue)> = buffered2
+        .drain()
+        .filter(|((_t, h), _)| hier2.signal_map.contains_key(h))
+        .collect();
     if !owned.is_empty() {
         has_differences = true;
     }
@@ -390,10 +395,15 @@ fn compare_signal_channels<W: Write>(
     }
 
     // Drain any remaining file2 batches we never read from the channel.
+    // Only changes for handles still in hier2 count -- filtered-out handles
+    // are streamed by the reader but excluded from the comparison set.
     if !source2_ended {
         for batch2 in &rx2 {
-            has_differences = true;
             for change2 in &batch2.changes {
+                if !hier2.signal_map.contains_key(&change2.handle) {
+                    continue;
+                }
+                has_differences = true;
                 for name in format_handle_names(change2.handle, &hier2.signal_map, &hier2.names) {
                     writeln!(
                         writer,

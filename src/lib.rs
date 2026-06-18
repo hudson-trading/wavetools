@@ -307,6 +307,32 @@ pub fn names_only(map: &SignalMap, tree: &NameTree) -> SignalNames {
         .collect()
 }
 
+/// Parse a list of filter strings (each may contain whitespace-separated
+/// glob patterns) into compiled `glob::Pattern`s.
+pub fn parse_filter_patterns(filter: &[String]) -> Result<Vec<glob::Pattern>, String> {
+    filter
+        .iter()
+        .flat_map(|s| s.split_whitespace())
+        .map(|p| glob::Pattern::new(p).map_err(|e| format!("Invalid glob pattern '{}': {}", p, e)))
+        .collect()
+}
+
+/// Drop entries from `hier.signal_map` whose fully-qualified names do not match
+/// any of the provided glob patterns. No-op when `patterns` is empty.
+pub fn apply_filter(hier: &mut WaveHierarchy, patterns: &[glob::Pattern]) {
+    if patterns.is_empty() {
+        return;
+    }
+    let tree = &hier.names;
+    hier.signal_map.retain(|_, info| {
+        info.vars.retain(|v| {
+            let name = tree.format_path(v.name);
+            patterns.iter().any(|p| p.matches(&name))
+        });
+        !info.vars.is_empty()
+    });
+}
+
 /// An FST reader over a buffered file
 pub(crate) type FstFileReader = FstReader<BufReader<File>>;
 
