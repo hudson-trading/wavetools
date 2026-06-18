@@ -157,6 +157,7 @@ they are included in their respective sets.
 | `--no-attrs` | Skip metadata comparison (type, size, direction, attributes) |
 | `--set1 <FILE>` | File(s) for set 1; may be specified multiple times |
 | `--set2 <FILE>` | File(s) for set 2; may be specified multiple times |
+| `-f, --filter <PATTERN>` | Filter signals by glob pattern; may be repeated or space-separated |
 
 ### Exit codes
 
@@ -224,6 +225,14 @@ Skip metadata comparison (only compare signal values):
 
 ```
 wavediff --no-attrs golden.fst test.fst
+```
+
+Restrict the comparison to a subset of signals with a glob filter:
+
+```
+wavediff --filter '*.clk' golden.fst test.fst
+wavediff --filter '*.clk *.cyc' golden.fst test.fst
+wavediff --filter '*.clk' --filter '*.cyc' golden.fst test.fst
 ```
 
 ## Supported formats

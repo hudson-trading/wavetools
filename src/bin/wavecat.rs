@@ -7,10 +7,9 @@
 //------------------------------------------------------------------------------
 
 use clap::Parser;
-use glob::Pattern;
 use wavetools::{
-    names_only, open_wave_files, write_attrs, write_names, write_signals_wave_multi, NameOptions,
-    SignalOutputOptions, WaveFormat, WaveHierarchy,
+    apply_filter, names_only, open_wave_files, parse_filter_patterns, write_attrs, write_names,
+    write_signals_wave_multi, NameOptions, SignalOutputOptions, WaveFormat,
 };
 use std::path::PathBuf;
 use std::process;
@@ -87,28 +86,6 @@ fn parse_format(s: &str) -> Result<WaveFormat, String> {
     }
 }
 
-fn parse_filter_patterns(filter: &[String]) -> Result<Vec<Pattern>, String> {
-    filter
-        .iter()
-        .flat_map(|s| s.split_whitespace())
-        .map(|p| Pattern::new(p).map_err(|e| format!("Invalid glob pattern '{}': {}", p, e)))
-        .collect()
-}
-
-fn apply_filters(hier: &mut WaveHierarchy, patterns: &[Pattern]) {
-    if patterns.is_empty() {
-        return;
-    }
-    let tree = &hier.names;
-    hier.signal_map.retain(|_, info| {
-        info.vars.retain(|v| {
-            let name = tree.format_path(v.name);
-            patterns.iter().any(|p| p.matches(&name))
-        });
-        !info.vars.is_empty()
-    });
-}
-
 fn main() {
     let args = Args::parse();
 
@@ -133,7 +110,7 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
     let paths: Vec<&std::path::Path> = args.file.iter().map(std::path::PathBuf::as_path).collect();
     let (readers, mut hierarchy, offsets) = open_wave_files(&paths, &name_options, args.format)?;
 
-    apply_filters(&mut hierarchy, &patterns);
+    apply_filter(&mut hierarchy, &patterns);
 
     if args.attrs {
         let mut stdout = std::io::stdout();

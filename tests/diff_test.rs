@@ -901,3 +901,273 @@ fn test_non_qualified_duplicate_enums_no_conflict() {
         result.err()
     );
 }
+
+// -- --filter tests -----------------------------------------------------------
+
+fn run_wave_diff_test_with_filter(
+    file1: &str,
+    file2: &str,
+    filter: &[&str],
+) -> (bool, String) {
+    let name_options = NameOptions::default();
+    let (reader1, mut hier1, reader2, mut hier2) =
+        wavetools::open_and_read_waves(file1, file2, &name_options)
+            .expect("Failed to open wave files");
+
+    let filter_strings: Vec<String> = filter.iter().map(|&s| s.to_string()).collect();
+    let patterns = wavetools::parse_filter_patterns(&filter_strings)
+        .expect("Failed to parse filter patterns");
+    wavetools::apply_filter(&mut hier1, &patterns);
+    wavetools::apply_filter(&mut hier2, &patterns);
+
+    let mut output = Vec::new();
+    let options = DiffOptions { start: 0, end: None, real_epsilon: None };
+    let has_differences = wavetools::diff_waves(
+        &mut output,
+        reader1,
+        hier1,
+        reader2,
+        hier2,
+        &options,
+    )
+    .expect("Failed to diff files");
+
+    let output_str = String::from_utf8(output).expect("Invalid UTF-8");
+    (has_differences, output_str)
+}
+
+#[test]
+fn test_filter_excludes_differing_signal() {
+    // counter.value.diff.fst differs only at t.the_sub.cyc_plus_one.
+    // Filtering it out leaves only matching signals -- no diff.
+    let (has_diff, output) = run_wave_diff_test_with_filter(
+        "tests/data/counter.fst",
+        "tests/data/counter.value.diff.fst",
+        &["*.clk"],
+    );
+    assert!(!has_diff, "Filter excluding the differing signal should report no diff. Output:\n{}", output);
+    assert_eq!(output, "", "No diff output expected");
+}
+
+#[test]
+fn test_filter_includes_differing_signal() {
+    // Same case but the filter targets the differing signal.
+    let (has_diff, output) = run_wave_diff_test_with_filter(
+        "tests/data/counter.fst",
+        "tests/data/counter.value.diff.fst",
+        &["*.cyc_plus_one"],
+    );
+    assert!(has_diff, "Filter including the differing signal should report a diff");
+    let expected = "\
+10 t.the_sub.cyc_plus_one 00000000000000000000000000000010 != 00000000000000000000000000000100
+";
+    assert_eq!(output, expected, "Expected diff output for the targeted signal");
+}
+
+#[test]
+fn test_filter_space_separated_patterns() {
+    // A single --filter value with multiple whitespace-separated globs should
+    // be split into individual patterns.
+    let (has_diff, output) = run_wave_diff_test_with_filter(
+        "tests/data/counter.fst",
+        "tests/data/counter.value.diff.fst",
+        &["*.clk *.cyc"],
+    );
+    assert!(!has_diff, "Two safe-signal globs should still report no diff. Output:\n{}", output);
+}
+
+#[test]
+fn test_filter_multiple_args_are_unioned() {
+    // Several --filter values should union: signals matching any pattern are kept.
+    let (has_diff, output) = run_wave_diff_test_with_filter(
+        "tests/data/counter.fst",
+        "tests/data/counter.value.diff.fst",
+        &["*.clk", "*.cyc"],
+    );
+    assert!(!has_diff, "Unioned safe-signal filters should report no diff. Output:\n{}", output);
+}
+
+#[test]
+fn test_filter_matches_nothing_yields_no_diff() {
+    // A filter that matches no signals in either file leaves both hierarchies
+    // empty -- no name diffs, no value diffs, nothing to report.
+    let (has_diff, output) = run_wave_diff_test_with_filter(
+        "tests/data/counter.fst",
+        "tests/data/counter.value.diff.fst",
+        &["*.nonexistent"],
+    );
+    assert!(!has_diff, "Filter matching nothing should not synthesize a diff. Output:\n{}", output);
+    assert_eq!(output, "", "Empty filtered set should produce no output");
+}
+
+#[test]
+fn test_filter_preserves_unrelated_diff() {
+    // Filter includes the differing signal AND others. Diff should still fire,
+    // and only the differing signal's line should appear.
+    let (has_diff, output) = run_wave_diff_test_with_filter(
+        "tests/data/counter.fst",
+        "tests/data/counter.value.diff.fst",
+        &["*.clk", "*.cyc_plus_one"],
+    );
+    assert!(has_diff, "Filter including the differing signal should still diff");
+    let expected = "\
+10 t.the_sub.cyc_plus_one 00000000000000000000000000000010 != 00000000000000000000000000000100
+";
+    assert_eq!(output, expected, "Only the targeted differing signal should be reported");
+}
+
+// -- --filter CLI tests -------------------------------------------------------
+
+#[test]
+fn test_cli_filter_excludes_diff_exits_zero() {
+    let output = run_wavediff_cli(&[
+        "--filter",
+        "*.clk",
+        "tests/data/counter.fst",
+        "tests/data/counter.value.diff.fst",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "Filtering out the diff should exit 0. stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout),
+    );
+}
+
+#[test]
+fn test_cli_filter_short_flag_includes_diff_exits_one() {
+    let output = run_wavediff_cli(&[
+        "-f",
+        "*.cyc_plus_one",
+        "tests/data/counter.fst",
+        "tests/data/counter.value.diff.fst",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "Targeting the differing signal should exit 1");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("cyc_plus_one"),
+        "stdout should contain the diff: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_cli_filter_repeated_flag() {
+    // Repeated --filter flags should union, leaving only safe signals.
+    let output = run_wavediff_cli(&[
+        "--filter",
+        "*.clk",
+        "--filter",
+        "*.cyc",
+        "tests/data/counter.fst",
+        "tests/data/counter.value.diff.fst",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "Repeated filters covering only safe signals should exit 0. stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn filter_name_mismatch(
+    file1: &str,
+    file2: &str,
+    filter: &[&str],
+) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+    let name_options = NameOptions::default();
+    let (_r1, mut hier1, _r2, mut hier2) =
+        wavetools::open_and_read_waves(file1, file2, &name_options)
+            .expect("Failed to open wave files");
+    let filter_strings: Vec<String> = filter.iter().map(|&s| s.to_string()).collect();
+    let patterns = wavetools::parse_filter_patterns(&filter_strings)
+        .expect("Failed to parse filter patterns");
+    wavetools::apply_filter(&mut hier1, &patterns);
+    wavetools::apply_filter(&mut hier2, &patterns);
+    compare_signal_names(&hier1, &hier2)
+}
+
+#[test]
+fn test_filter_matches_only_file1_reports_name_mismatch() {
+    // counter.sig_name.diff.fst renames cyc_plus_one -> blargh, so the filter
+    // hits a signal in file1 only. This asymmetry must surface as a diff so
+    // the user knows their filter scope didn't line up across the two files.
+    let (only_in_1, only_in_2) = filter_name_mismatch(
+        "tests/data/counter.fst",
+        "tests/data/counter.sig_name.diff.fst",
+        &["*.cyc_plus_one"],
+    );
+    assert!(only_in_1.contains("t.the_sub.cyc_plus_one"),
+        "Should report cyc_plus_one only in file1, got: {:?}", only_in_1);
+    assert!(only_in_2.is_empty(),
+        "Nothing should be only in file2, got: {:?}", only_in_2);
+}
+
+#[test]
+fn test_filter_matches_only_file2_reports_name_mismatch() {
+    // Symmetric case: *.blargh hits the renamed signal in file2 but nothing
+    // in file1.
+    let (only_in_1, only_in_2) = filter_name_mismatch(
+        "tests/data/counter.fst",
+        "tests/data/counter.sig_name.diff.fst",
+        &["*.blargh"],
+    );
+    assert!(only_in_2.contains("t.the_sub.blargh"),
+        "Should report blargh only in file2, got: {:?}", only_in_2);
+    assert!(only_in_1.is_empty(),
+        "Nothing should be only in file1, got: {:?}", only_in_1);
+}
+
+#[test]
+fn test_cli_filter_matches_only_file1_exits_one() {
+    let output = run_wavediff_cli(&[
+        "--filter",
+        "*.cyc_plus_one",
+        "tests/data/counter.fst",
+        "tests/data/counter.sig_name.diff.fst",
+    ]);
+    assert_eq!(output.status.code(), Some(1),
+        "Filter matching only file1 should exit 1. stderr: {}",
+        String::from_utf8_lossy(&output.stderr));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("t.the_sub.cyc_plus_one"),
+        "stderr should name the asymmetric signal: {}", stderr);
+}
+
+#[test]
+fn test_cli_filter_matches_only_file2_exits_one() {
+    let output = run_wavediff_cli(&[
+        "--filter",
+        "*.blargh",
+        "tests/data/counter.fst",
+        "tests/data/counter.sig_name.diff.fst",
+    ]);
+    assert_eq!(output.status.code(), Some(1),
+        "Filter matching only file2 should exit 1. stderr: {}",
+        String::from_utf8_lossy(&output.stderr));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("t.the_sub.blargh"),
+        "stderr should name the asymmetric signal: {}", stderr);
+}
+
+#[test]
+fn test_cli_filter_invalid_glob_exits_with_error() {
+    let output = run_wavediff_cli(&[
+        "--filter",
+        "[",
+        "tests/data/counter.fst",
+        "tests/data/counter.fst",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "Invalid glob pattern should exit 2 with error"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invalid glob pattern"),
+        "stderr should mention the invalid pattern: {}",
+        stderr
+    );
+}

@@ -10,8 +10,8 @@ use clap::Parser;
 use std::io::Write;
 use std::path::PathBuf;
 use wavetools::{
-    compare_signal_meta, compare_signal_names, diff_wave_sets, open_and_read_wave_sets,
-    DiffOptions, NameOptions, WaveHierarchy,
+    apply_filter, compare_signal_meta, compare_signal_names, diff_wave_sets,
+    open_and_read_wave_sets, parse_filter_patterns, DiffOptions, NameOptions, WaveHierarchy,
 };
 
 const VERSION: &str = concat!(
@@ -71,6 +71,11 @@ struct Args {
     /// File(s) for set 2; may be specified multiple times
     #[arg(long, action = clap::ArgAction::Append)]
     set2: Vec<PathBuf>,
+
+    /// Filter signals by glob pattern(s); may be specified multiple times or as a
+    /// space-separated list (e.g. --filter "*.foo *.bar" or --filter "*.foo" --filter "*.bar")
+    #[arg(short, long, action = clap::ArgAction::Append)]
+    filter: Vec<String>,
 }
 
 fn main() {
@@ -171,10 +176,13 @@ fn run(args: Args) -> Result<bool, String> {
     set2_paths.extend(args.set2.iter().cloned());
 
     let name_options = NameOptions::default();
+    let patterns = parse_filter_patterns(&args.filter)?;
     let paths1: Vec<&std::path::Path> = set1_paths.iter().map(PathBuf::as_path).collect();
     let paths2: Vec<&std::path::Path> = set2_paths.iter().map(PathBuf::as_path).collect();
 
-    let sets = open_and_read_wave_sets(&paths1, &paths2, &name_options)?;
+    let mut sets = open_and_read_wave_sets(&paths1, &paths2, &name_options)?;
+    apply_filter(&mut sets.hier1, &patterns);
+    apply_filter(&mut sets.hier2, &patterns);
 
     // For name-mismatch reporting, use FILE1/FILE2 if given, else first --set file
     let label1 = args.file1.as_deref().unwrap_or(set1_paths[0].as_path());
