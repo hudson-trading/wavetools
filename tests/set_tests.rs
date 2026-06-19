@@ -424,6 +424,39 @@ fn test_cli_wavediff_sets_only_value_diff() {
 }
 
 #[test]
+fn test_cli_wavediff_set_filter_excludes_value_diff() {
+    // The value difference lives in set_counter_modified.vcd. Filtering to the
+    // disjoint clk reader should avoid streaming/reporting that difference.
+    let output = run_wavediff_cli(&[
+        "--filter", "*.clk",
+        "--set1", "tests/data/set_clk.vcd",
+        "--set1", "tests/data/set_counter_modified.vcd",
+        "--set2", "tests/data/counter.vcd",
+    ]);
+    assert!(
+        output.status.success(),
+        "Expected filtered set diff to exit 0, stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn test_cli_wavediff_set_filter_includes_value_diff() {
+    // Filtering to a signal in the second set1 reader exercises non-zero
+    // handle offsets while preserving the expected value diff.
+    let output = run_wavediff_cli(&[
+        "--filter", "*.cyc_plus_one",
+        "--set1", "tests/data/set_clk.vcd",
+        "--set1", "tests/data/set_counter_modified.vcd",
+        "--set2", "tests/data/counter.vcd",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "Expected exit 1");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("t.the_sub.cyc_plus_one"));
+}
+
+#[test]
 fn test_cli_wavediff_set1_only_no_positional_fails() {
     // Only --set1 without positional args should fail
     let output = run_wavediff_cli(&[
