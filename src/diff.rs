@@ -221,10 +221,18 @@ fn flush_batch(tx: &channel::Sender<TimeBatch>, time: u64, changes: &mut Vec<Sig
     let _ = tx.send(TimeBatch { time, changes: full });
 }
 
-/// Build per-reader local handle include sets from a merged, possibly filtered
-/// signal map. Merged handles are offset by `merge_signal_maps`; the reader
-/// threads need the original local handles.
-fn reader_include_sets(signal_map: &SignalMap, offsets: &[usize]) -> Vec<HashSet<usize>> {
+/// Build per-reader local handle include sets from a filtered merged signal map.
+/// Returns `None` when every source handle is still present so the readers can
+/// keep their unfiltered fast path.
+fn reader_include_sets(
+    signal_map: &SignalMap,
+    offsets: &[usize],
+    source_signal_count: usize,
+) -> Option<Vec<HashSet<usize>>> {
+    if signal_map.len() == source_signal_count {
+        return None;
+    }
+
     let mut include_sets: Vec<HashSet<usize>> =
         (0..offsets.len()).map(|_| HashSet::new()).collect();
 
@@ -237,7 +245,14 @@ fn reader_include_sets(signal_map: &SignalMap, offsets: &[usize]) -> Vec<HashSet
         include_sets[reader_idx].insert(handle - offsets[reader_idx]);
     }
 
-    include_sets
+    Some(include_sets)
+}
+
+fn reader_signal_count(reader: &WaveReader) -> usize {
+    match reader {
+        WaveReader::Fst(reader) => reader.get_header().max_handle as usize,
+        WaveReader::Vcd(vcd_data) => vcd_data.id_to_idx.len(),
+    }
 }
 
 /// Read signals from an FST reader and send same-time batches to a channel.
@@ -442,18 +457,20 @@ fn compare_signal_channels<W: Write>(
 fn send_wave_changes(
     reader: WaveReader,
     handle_offset: usize,
-    include: HashSet<usize>,
+    include: Option<HashSet<usize>>,
     start: u64,
     end: Option<u64>,
     tx: channel::Sender<TimeBatch>,
 ) -> io::Result<()> {
     match reader {
         WaveReader::Fst(fst_reader) => {
-            let include = include.into_iter().map(FstSignalHandle::from_index).collect();
+            let include = include.map(|handles| {
+                handles.into_iter().map(FstSignalHandle::from_index).collect()
+            });
             let filter = FstFilter {
                 start,
                 end,
-                include: Some(include),
+                include,
             };
             read_and_send_signals(*fst_reader, filter, handle_offset, tx)?;
         }
@@ -469,7 +486,7 @@ fn send_wave_changes(
                         break;
                     }
                 }
-                if !include.contains(&handle) {
+                if include.as_ref().is_some_and(|handles| !handles.contains(&handle)) {
                     continue;
                 }
                 if !batch.is_empty() && (time != batch_time || batch.len() >= BATCH_SIZE) {
@@ -496,19 +513,21 @@ fn send_wave_changes(
 fn send_merged_wave_changes(
     readers: Vec<WaveReader>,
     offsets: &[usize],
-    include_sets: Vec<HashSet<usize>>,
+    include_sets: Option<Vec<HashSet<usize>>>,
     start: u64,
     end: Option<u64>,
     tx: channel::Sender<TimeBatch>,
 ) -> io::Result<()> {
     debug_assert_eq!(readers.len(), offsets.len());
-    debug_assert_eq!(readers.len(), include_sets.len());
+    if let Some(sets) = &include_sets {
+        debug_assert_eq!(readers.len(), sets.len());
+    }
 
     if readers.len() == 1 {
         return send_wave_changes(
             readers.into_iter().next().unwrap(),
             offsets[0],
-            include_sets.into_iter().next().unwrap(),
+            include_sets.and_then(|sets| sets.into_iter().next()),
             start,
             end,
             tx,
@@ -519,7 +538,9 @@ fn send_merged_wave_changes(
     let mut inner_rxs = Vec::with_capacity(readers.len());
     let mut threads = Vec::new();
 
-    for ((reader, &offset), include) in readers.into_iter().zip(offsets.iter()).zip(include_sets) {
+    let mut include_sets = include_sets.map(Vec::into_iter);
+    for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
+        let include = include_sets.as_mut().and_then(|sets| sets.next());
         let (inner_tx, inner_rx) = channel::bounded(CHANNEL_BOUND);
         threads.push(std::thread::spawn(move || {
             send_wave_changes(reader, offset, include, start, end, inner_tx)
@@ -673,8 +694,10 @@ pub fn diff_wave_sets<W: Write>(
         hier2,
         offsets2,
     } = sets;
-    let include_sets1 = reader_include_sets(&hier1.signal_map, &offsets1);
-    let include_sets2 = reader_include_sets(&hier2.signal_map, &offsets2);
+    let source_signal_count1 = readers1.iter().map(reader_signal_count).sum();
+    let source_signal_count2 = readers2.iter().map(reader_signal_count).sum();
+    let include_sets1 = reader_include_sets(&hier1.signal_map, &offsets1, source_signal_count1);
+    let include_sets2 = reader_include_sets(&hier2.signal_map, &offsets2, source_signal_count2);
 
     let thread1 = std::thread::spawn(move || {
         send_merged_wave_changes(readers1, &offsets1, include_sets1, start, end, tx1)
@@ -759,7 +782,7 @@ mod tests {
     fn reader_include_sets_split_merged_handles_by_reader_offset() {
         let map = signal_map(&[0, 1, 4, 6, 9]);
 
-        let include_sets = reader_include_sets(&map, &[0, 4, 9]);
+        let include_sets = reader_include_sets(&map, &[0, 4, 9], 12).unwrap();
 
         assert_eq!(include_sets.len(), 3);
         assert_eq!(include_sets[0], HashSet::from([0, 1]));
@@ -771,10 +794,40 @@ mod tests {
     fn reader_include_sets_preserve_empty_filtered_readers() {
         let map = signal_map(&[5]);
 
-        let include_sets = reader_include_sets(&map, &[0, 5]);
+        let include_sets = reader_include_sets(&map, &[0, 5], 10).unwrap();
 
         assert_eq!(include_sets.len(), 2);
         assert!(include_sets[0].is_empty());
         assert_eq!(include_sets[1], HashSet::from([0]));
+    }
+
+    #[test]
+    fn reader_include_sets_skip_unfiltered_sources() {
+        let map = signal_map(&[0, 1, 2, 3, 4]);
+
+        assert!(reader_include_sets(&map, &[0, 3], 5).is_none());
+    }
+
+    #[test]
+    fn native_reader_counts_match_unfiltered_hierarchies() {
+        for path in ["tests/data/counter.fst", "tests/data/counter.vcd"] {
+            let (reader, hierarchy) =
+                crate::open_wave_file(Path::new(path), &NameOptions::default()).unwrap();
+            let source_signal_count = reader_signal_count(&reader);
+
+            assert_eq!(source_signal_count, hierarchy.signal_map.len(), "{path}");
+            assert!(reader_include_sets(&hierarchy.signal_map, &[0], source_signal_count).is_none());
+        }
+
+        let paths = [
+            Path::new("tests/data/set_clk.vcd"),
+            Path::new("tests/data/set_counter.vcd"),
+        ];
+        let (readers, hierarchy, offsets) =
+            crate::open_wave_files(&paths, &NameOptions::default(), None).unwrap();
+        let source_signal_count = readers.iter().map(reader_signal_count).sum();
+
+        assert_eq!(source_signal_count, hierarchy.signal_map.len());
+        assert!(reader_include_sets(&hierarchy.signal_map, &offsets, source_signal_count).is_none());
     }
 }
