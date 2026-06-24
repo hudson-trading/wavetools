@@ -11,8 +11,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use wavetools::{
     apply_filter, compare_signal_meta, compare_signal_names, diff_wave_sets_with_report,
-    open_and_read_wave_sets, parse_filter_patterns, DiffOptions, DiffOutputOptions, DiffSide,
-    NameOptions, WaveHierarchy,
+    open_and_read_wave_sets, parse_filter_patterns, retain_common_signals, DiffOptions,
+    DiffOutputOptions, DiffSide, NameOptions, WaveHierarchy,
 };
 
 const VERSION: &str = concat!(
@@ -42,6 +42,7 @@ Examples:
   wavediff --start 100 --end 500 sim1.vcd sim2.vcd
   wavediff --epsilon 0.001 analog1.fst analog2.vcd
   wavediff --ignore-xz sim1.fst sim2.fst
+  wavediff --ignore-missing sim1.fst sim2.fst
   wavediff --set1 extra1.vcd baseline.vcd current.vcd
   wavediff --set1 clk.vcd --set1 regs.vcd --set2 counter.vcd
   wavediff --set1 clk.vcd --set1 regs.vcd --set2 clk.vcd --set2 regs_new.vcd baseline.vcd current.vcd"
@@ -81,6 +82,10 @@ struct Args {
     /// space-separated list (e.g. --filter "*.foo *.bar" or --filter "*.foo" --filter "*.bar")
     #[arg(short, long, action = clap::ArgAction::Append)]
     filter: Vec<String>,
+
+    /// Ignore signals that are missing from either input
+    #[arg(long)]
+    ignore_missing: bool,
 
     /// Ignore value differences only for bits where either side is X or Z
     #[arg(long = "ignore-xz")]
@@ -194,8 +199,13 @@ fn run(args: Args) -> Result<bool, String> {
     let label1 = args.file1.as_deref().unwrap_or(set1_paths[0].as_path());
     let label2 = args.file2.as_deref().unwrap_or(set2_paths[0].as_path());
 
-    let (only_in_1, only_in_2) = compare_signal_names(&sets.hier1, &sets.hier2);
-    let mut has_differences = report_name_mismatch(label1, &only_in_1, label2, &only_in_2);
+    let mut has_differences = false;
+    if args.ignore_missing {
+        retain_common_signals(&mut sets.hier1, &mut sets.hier2);
+    } else {
+        let (only_in_1, only_in_2) = compare_signal_names(&sets.hier1, &sets.hier2);
+        has_differences = report_name_mismatch(label1, &only_in_1, label2, &only_in_2);
+    }
 
     if !args.no_attrs {
         has_differences |= report_meta_diffs(&sets.hier1, &sets.hier2);
