@@ -46,14 +46,14 @@ fn test_diff_end_time() {
         "tests/data/counter.end_time.diff.fst",
     );
     assert!(
-        has_diff,
-        "counter.end_time.diff.fst should differ from counter.fst"
+        !has_diff,
+        "Trailing samples beyond the shorter file should be ignored. Output:\n{}",
+        output
     );
-
-    let expected = "\
-50 t.clk 1 (missing time in file2)
-";
-    assert_eq!(output, expected, "Expected exact diff output");
+    assert_eq!(
+        output, "",
+        "Ignored trailing samples should not produce diff output"
+    );
 }
 
 // Tests for files that should NOT differ from counter.fst
@@ -190,6 +190,118 @@ fn test_buffered_file2_only_diffs_are_sorted() {
 }
 
 #[test]
+fn test_terminal_same_tick_file1_only_changes_are_trimmed() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-terminal-trim-{}-1.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-terminal-trim-{}-2.vcd", pid));
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! clk $end
+$var wire 1 \" a $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0\"
+#10
+1!
+1\"
+",
+    )
+    .expect("write file1");
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! clk $end
+$var wire 1 \" a $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0\"
+#10
+1!
+",
+    )
+    .expect("write file2");
+
+    let (has_diff, output) = run_wave_diff_test(
+        file1.to_str().expect("temp path should be UTF-8"),
+        file2.to_str().expect("temp path should be UTF-8"),
+    );
+    assert!(
+        !has_diff,
+        "terminal file1-only changes should be trim-only. Output:\n{}",
+        output
+    );
+    assert_eq!(output, "");
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+}
+
+#[test]
+fn test_terminal_same_tick_file2_only_changes_are_trimmed() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-terminal-trim-{}-a.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-terminal-trim-{}-b.vcd", pid));
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! clk $end
+$var wire 1 \" a $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0\"
+#10
+1!
+",
+    )
+    .expect("write file1");
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! clk $end
+$var wire 1 \" a $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0\"
+#10
+1!
+1\"
+",
+    )
+    .expect("write file2");
+
+    let (has_diff, output) = run_wave_diff_test(
+        file1.to_str().expect("temp path should be UTF-8"),
+        file2.to_str().expect("temp path should be UTF-8"),
+    );
+    assert!(
+        !has_diff,
+        "terminal file2-only changes should be trim-only. Output:\n{}",
+        output
+    );
+    assert_eq!(output, "");
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+}
+
+#[test]
 fn test_new_sig_diff() {
     let (has_name_diff, msg) = check_signal_names(
         "tests/data/counter.fst",
@@ -314,15 +426,13 @@ fn test_diff_vcd_end_time() {
         "tests/data/counter.end_time.diff.vcd",
     );
     assert!(
-        has_diff,
-        "counter.end_time.diff.vcd should differ from counter.vcd"
+        !has_diff,
+        "Trailing samples beyond the shorter file should be ignored. Output:\n{}",
+        output
     );
-    let expected = "\
-50 t.clk 1 (missing time in file2)
-";
     assert_eq!(
-        output, expected,
-        "Expected exact diff output for VCD end time diff"
+        output, "",
+        "Ignored trailing samples should not produce diff output"
     );
 }
 
@@ -1347,6 +1457,27 @@ fn test_cli_filter_invalid_glob_exits_with_error() {
     assert!(
         stderr.contains("Invalid glob pattern"),
         "stderr should mention the invalid pattern: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_cli_wavediff_reports_ignored_longer_input() {
+    let output = run_wavediff_cli(&[
+        "tests/data/counter.fst",
+        "tests/data/counter.end_time.diff.fst",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "Trailing-only comparison should exit 0. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Ignored trailing samples in tests/data/counter.fst after time 40"),
+        "stderr should report ignored trailing samples: {}",
         stderr
     );
 }

@@ -13,8 +13,9 @@ mod vcd;
 
 pub use cat::{write_signals_wave, write_signals_wave_multi, SignalOutputOptions};
 pub use diff::{
-    compare_signal_meta, compare_signal_names, diff_wave_sets, diff_waves, open_and_read_wave_sets,
-    open_and_read_waves, DiffOptions, WaveSets,
+    compare_signal_meta, compare_signal_names, diff_wave_sets, diff_wave_sets_with_report,
+    diff_waves, open_and_read_wave_sets, open_and_read_waves, DiffOptions, DiffOutputOptions,
+    DiffReport, DiffSide, TrimReport, WaveSets,
 };
 
 use fst_reader::{
