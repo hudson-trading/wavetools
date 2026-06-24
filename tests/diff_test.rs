@@ -1462,6 +1462,397 @@ fn test_cli_filter_invalid_glob_exits_with_error() {
 }
 
 #[test]
+fn test_cli_ignore_xz_masks_x_differences() {
+    let output = run_wavediff_cli(&[
+        "--ignore-xz",
+        "tests/data/diff/x_base.vcd",
+        "tests/data/diff/x_diff.vcd",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "--ignore-xz should ignore differences involving x. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn test_cli_ignore_xz_masks_z_differences() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-ignore-xz-z-{}-1.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-ignore-xz-z-{}-2.vcd", pid));
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 4 ! data $end
+$upscope $end
+$enddefinitions $end
+#0
+b0000 !
+#10
+bzzzz !
+",
+    )
+    .expect("write file1");
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 4 ! data $end
+$upscope $end
+$enddefinitions $end
+#0
+b0000 !
+#10
+b1010 !
+",
+    )
+    .expect("write file2");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            "--ignore-xz",
+            file1.to_str().expect("temp path should be UTF-8"),
+            file2.to_str().expect("temp path should be UTF-8"),
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "--ignore-xz should ignore differences involving z. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+}
+
+#[test]
+fn test_cli_ignore_xz_still_reports_known_bit_differences() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-ignore-xz-{}-1.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-ignore-xz-{}-2.vcd", pid));
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 2 ! data $end
+$upscope $end
+$enddefinitions $end
+#0
+b00 !
+#10
+b0x !
+",
+    )
+    .expect("write file1");
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 2 ! data $end
+$upscope $end
+$enddefinitions $end
+#0
+b00 !
+#10
+b11 !
+",
+    )
+    .expect("write file2");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            "--ignore-xz",
+            file1.to_str().expect("temp path should be UTF-8"),
+            file2.to_str().expect("temp path should be UTF-8"),
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "--ignore-xz should still report known-bit differences. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("10 t.data 0x != 11"),
+        "stdout should contain the known-bit diff: {}",
+        stdout
+    );
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+}
+
+#[test]
+fn test_cli_without_ignore_xz_reports_x_differences() {
+    let output = run_wavediff_cli(&["tests/data/diff/x_base.vcd", "tests/data/diff/x_diff.vcd"]);
+    assert_eq!(output.status.code(), Some(1), "Expected exit 1");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("t.data"),
+        "stdout should contain the x diff: {}",
+        stdout
+    );
+}
+
+// Regression: --ignore-xz must mask a difference even when only ONE side
+// changes at the differing time and the other is merely HOLDING an x from an
+// earlier time. The change-driven comparison could not see the held x; the
+// state-tracking comparison can.
+#[test]
+fn test_cli_ignore_xz_masks_held_x_on_unaligned_change() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-held-x-{}-1.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-held-x-{}-2.vcd", pid));
+    // file1 settles to a known value at #20 (no change at #20 on file2).
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 2 ! data $end
+$upscope $end
+$enddefinitions $end
+#0
+b00 !
+#20
+b11 !
+#30
+b00 !
+",
+    )
+    .expect("write file1");
+    // file2 goes to xx at #10 and holds it across #20 and #30.
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 2 ! data $end
+$upscope $end
+$enddefinitions $end
+#0
+b00 !
+#10
+bxx !
+#30
+b00 !
+",
+    )
+    .expect("write file2");
+
+    let with_ignore = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            "--ignore-xz",
+            file1.to_str().expect("temp path should be UTF-8"),
+            file2.to_str().expect("temp path should be UTF-8"),
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        with_ignore.status.code(),
+        Some(0),
+        "--ignore-xz should mask the held-x difference. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&with_ignore.stdout),
+        String::from_utf8_lossy(&with_ignore.stderr),
+    );
+
+    // Without --ignore-xz the same inputs differ (file1 b11 vs file2 held xx).
+    let without_ignore = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            file1.to_str().expect("temp path should be UTF-8"),
+            file2.to_str().expect("temp path should be UTF-8"),
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        without_ignore.status.code(),
+        Some(1),
+        "without --ignore-xz the held-x case should still differ. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&without_ignore.stdout),
+        String::from_utf8_lossy(&without_ignore.stderr),
+    );
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+}
+
+#[test]
+fn test_cli_ignore_xz_masks_held_z_on_unaligned_change() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-held-z-{}-1.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-held-z-{}-2.vcd", pid));
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 2 ! data $end
+$upscope $end
+$enddefinitions $end
+#0
+b00 !
+#20
+b11 !
+#30
+b00 !
+",
+    )
+    .expect("write file1");
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 2 ! data $end
+$upscope $end
+$enddefinitions $end
+#0
+b00 !
+#10
+bzz !
+#30
+b00 !
+",
+    )
+    .expect("write file2");
+
+    let with_ignore = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            "--ignore-xz",
+            file1.to_str().expect("temp path should be UTF-8"),
+            file2.to_str().expect("temp path should be UTF-8"),
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        with_ignore.status.code(),
+        Some(0),
+        "--ignore-xz should mask the held-z difference. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&with_ignore.stdout),
+        String::from_utf8_lossy(&with_ignore.stderr),
+    );
+
+    let without_ignore = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            file1.to_str().expect("temp path should be UTF-8"),
+            file2.to_str().expect("temp path should be UTF-8"),
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        without_ignore.status.code(),
+        Some(1),
+        "without --ignore-xz the held-z case should still differ. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&without_ignore.stdout),
+        String::from_utf8_lossy(&without_ignore.stderr),
+    );
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+}
+
+// The state-tracking path must fan a held value out to every name an aliased
+// id resolves to, reporting each known-bit difference once.
+#[test]
+fn test_cli_ignore_xz_aliased_idcodes_report_each_name_once() {
+    let output = run_wavediff_cli(&[
+        "--ignore-xz",
+        "tests/data/idcode_a.vcd",
+        "tests/data/error/idcode_a_value_diff.vcd",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "known-bit diffs on aliased ids should report under --ignore-xz. stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout, "0 m.s0.a 0 != 1\n0 m.s1.c 0 != 1\n",
+        "each aliased name should be reported exactly once"
+    );
+}
+
+// Trailing samples beyond the shorter input are trimmed (not diffed) on the
+// state-tracking path too.
+#[test]
+fn test_cli_ignore_xz_trims_trailing_samples() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-ixz-trim-{}-1.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-ixz-trim-{}-2.vcd", pid));
+    // file1 runs longer than file2; the extra #30 sample should be trimmed.
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! data $end
+$upscope $end
+$enddefinitions $end
+#0
+b0 !
+#10
+b1 !
+#30
+b0 !
+",
+    )
+    .expect("write file1");
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! data $end
+$upscope $end
+$enddefinitions $end
+#0
+b0 !
+#10
+b1 !
+",
+    )
+    .expect("write file2");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            "--ignore-xz",
+            file1.to_str().expect("temp path should be UTF-8"),
+            file2.to_str().expect("temp path should be UTF-8"),
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "trailing file1 samples should be trimmed, not diffed. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Ignored trailing samples"),
+        "should report the trim on stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+}
+
+#[test]
 fn test_cli_wavediff_reports_ignored_longer_input() {
     let output = run_wavediff_cli(&[
         "tests/data/counter.fst",

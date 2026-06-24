@@ -41,6 +41,7 @@ Examples:
   wavediff baseline.fst current.fst
   wavediff --start 100 --end 500 sim1.vcd sim2.vcd
   wavediff --epsilon 0.001 analog1.fst analog2.vcd
+  wavediff --ignore-xz sim1.fst sim2.fst
   wavediff --set1 extra1.vcd baseline.vcd current.vcd
   wavediff --set1 clk.vcd --set1 regs.vcd --set2 counter.vcd
   wavediff --set1 clk.vcd --set1 regs.vcd --set2 clk.vcd --set2 regs_new.vcd baseline.vcd current.vcd"
@@ -80,6 +81,10 @@ struct Args {
     /// space-separated list (e.g. --filter "*.foo *.bar" or --filter "*.foo" --filter "*.bar")
     #[arg(short, long, action = clap::ArgAction::Append)]
     filter: Vec<String>,
+
+    /// Ignore value differences only for bits where either side is X or Z
+    #[arg(long = "ignore-xz")]
+    ignore_xz: bool,
 }
 
 fn main() {
@@ -206,7 +211,9 @@ fn run(args: Args) -> Result<bool, String> {
         &mut stdout,
         sets,
         &diff_options,
-        &DiffOutputOptions::default(),
+        &DiffOutputOptions {
+            ignore_xz: args.ignore_xz,
+        },
     )
     .map_err(|e| format!("Failed to diff files: {}", e))?;
 
