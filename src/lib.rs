@@ -8,6 +8,8 @@
 
 mod cat;
 mod diff;
+mod diff_report;
+mod fst_diff;
 #[allow(dead_code, unused_imports, clippy::manual_repeat_n)]
 mod vcd;
 
@@ -17,6 +19,7 @@ pub use diff::{
     diff_waves, open_and_read_wave_sets, open_and_read_waves, DiffOptions, DiffOutputOptions,
     DiffReport, DiffSide, TrimReport, WaveSets,
 };
+pub use fst_diff::{FstDiffOutput, FstDiffSide, SidePair};
 
 use fst_reader::{
     is_fst_file, FstArrayType, FstEnumType, FstHierarchyEntry, FstPackType, FstReader,

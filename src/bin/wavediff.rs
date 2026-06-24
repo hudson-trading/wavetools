@@ -8,11 +8,11 @@
 
 use clap::Parser;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use wavetools::{
     apply_filter, compare_signal_meta, compare_signal_names, diff_wave_sets_with_report,
     open_and_read_wave_sets, parse_filter_patterns, retain_common_signals, DiffOptions,
-    DiffOutputOptions, DiffSide, NameOptions, WaveHierarchy,
+    DiffOutputOptions, DiffSide, FstDiffOutput, FstDiffSide, NameOptions, SidePair, WaveHierarchy,
 };
 
 const VERSION: &str = concat!(
@@ -43,6 +43,7 @@ Examples:
   wavediff --epsilon 0.001 analog1.fst analog2.vcd
   wavediff --ignore-xz sim1.fst sim2.fst
   wavediff --ignore-missing sim1.fst sim2.fst
+  wavediff --fst-diff diff.fst baseline.fst current.fst
   wavediff --set1 extra1.vcd baseline.vcd current.vcd
   wavediff --set1 clk.vcd --set1 regs.vcd --set2 counter.vcd
   wavediff --set1 clk.vcd --set1 regs.vcd --set2 clk.vcd --set2 regs_new.vcd baseline.vcd current.vcd"
@@ -90,6 +91,10 @@ struct Args {
     /// Ignore value differences only for bits where either side is X or Z
     #[arg(long = "ignore-xz")]
     ignore_xz: bool,
+
+    /// Write an FST containing only signals that had value differences
+    #[arg(long = "fst-diff")]
+    fst_diff: Option<PathBuf>,
 }
 
 fn main() {
@@ -146,6 +151,15 @@ fn report_meta_diffs(hier1: &WaveHierarchy, hier2: &WaveHierarchy) -> bool {
     } else {
         false
     }
+}
+
+fn side_label(path: &Path, fallback: &str) -> String {
+    path.file_stem()
+        .or_else(|| path.file_name())
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 fn run(args: Args) -> Result<bool, String> {
@@ -216,6 +230,28 @@ fn run(args: Args) -> Result<bool, String> {
         end: args.end,
         real_epsilon: args.epsilon,
     };
+    let fst_diff = args.fst_diff.as_ref().map(|path| {
+        let mut side1 = side_label(label1, "file1");
+        let mut side2 = side_label(label2, "file2");
+        if side1 == side2 {
+            side1.push_str("_file1");
+            side2.push_str("_file2");
+        }
+        FstDiffOutput {
+            path: path.clone(),
+            sides: SidePair {
+                side1: FstDiffSide {
+                    label: side1,
+                    paths: set1_paths.clone(),
+                },
+                side2: FstDiffSide {
+                    label: side2,
+                    paths: set2_paths.clone(),
+                },
+            },
+            name_options: name_options.clone(),
+        }
+    });
     let mut stdout = std::io::stdout();
     let diff_report = diff_wave_sets_with_report(
         &mut stdout,
@@ -223,6 +259,7 @@ fn run(args: Args) -> Result<bool, String> {
         &diff_options,
         &DiffOutputOptions {
             ignore_xz: args.ignore_xz,
+            fst_diff,
         },
     )
     .map_err(|e| format!("Failed to diff files: {}", e))?;

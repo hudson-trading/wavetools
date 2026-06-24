@@ -14,6 +14,8 @@ use std::path::Path;
 use crossbeam_channel as channel;
 use fst_reader::{FstFilter, FstSignalHandle, FstSignalValue};
 
+use crate::diff_report::DiffReportRows;
+use crate::fst_diff::{FstDiffOutput, FstDiffRecorder};
 use crate::{next_vcd_change, NameOptions, NameTree, SignalMap, WaveHierarchy, WaveReader};
 
 /// Options controlling diff behavior (time range, epsilon).
@@ -27,6 +29,7 @@ pub struct DiffOptions {
 #[derive(Default)]
 pub struct DiffOutputOptions {
     pub ignore_xz: bool,
+    pub fst_diff: Option<FstDiffOutput>,
 }
 
 /// Which input had trailing samples ignored because it extended beyond the other.
@@ -48,6 +51,7 @@ pub struct TrimReport {
 pub struct DiffReport {
     pub has_differences: bool,
     pub trim: Option<TrimReport>,
+    pub fst_diff_signal_count: usize,
 }
 
 /// Result of opening two wave file sets for comparison.
@@ -70,7 +74,7 @@ const BATCH_SIZE: usize = 4096;
 
 /// Owned version of `FstSignalValue` for sending through channels
 #[derive(Debug, Clone)]
-enum OwnedSignalValue {
+pub(crate) enum OwnedSignalValue {
     String(Vec<u8>),
     Real(f64),
 }
@@ -165,6 +169,14 @@ impl OwnedSignalValue {
             }
         })
     }
+
+    /// True if the value holds any X-like bit (`x`, `u`, `w`, `-`, `?`, ...).
+    fn has_x_like_bits(&self) -> bool {
+        match self {
+            OwnedSignalValue::String(bytes) => bytes.iter().any(|byte| is_x_like_bit(*byte)),
+            OwnedSignalValue::Real(_) => false,
+        }
+    }
 }
 
 fn is_xz_mask_bit(byte: u8) -> bool {
@@ -172,6 +184,10 @@ fn is_xz_mask_bit(byte: u8) -> bool {
         byte,
         b'x' | b'X' | b'z' | b'Z' | b'u' | b'U' | b'w' | b'W' | b'-' | b'?'
     )
+}
+
+fn is_x_like_bit(byte: u8) -> bool {
+    matches!(byte, b'x' | b'X' | b'u' | b'U' | b'w' | b'W' | b'-' | b'?')
 }
 
 fn is_logic_value_byte(byte: u8) -> bool {
@@ -249,6 +265,13 @@ fn build_name_id_to_handles(map: &SignalMap) -> HashMap<crate::NameId, Vec<usize
     result
 }
 
+#[derive(Debug)]
+struct HandleMatch {
+    name_a: crate::NameId,
+    name_b: crate::NameId,
+    handle_b: usize,
+}
+
 /// Build mapping from handles in file A to handles in file B using tree-based lookup.
 ///
 /// For each signal in A, walks A's tree to get segments, then looks up those
@@ -259,26 +282,32 @@ fn build_handle_mapping(
     tree_a: &NameTree,
     map_b: &SignalMap,
     tree_b: &NameTree,
-) -> HashMap<usize, Vec<usize>> {
+) -> HashMap<usize, Vec<HandleMatch>> {
     let name_id_to_handles_b = build_name_id_to_handles(map_b);
-    let mut handle_mapping: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut handle_mapping: HashMap<usize, Vec<HandleMatch>> = HashMap::new();
 
     for (&handle_a, info) in map_a {
-        let mut handles_b = Vec::new();
+        let mut matches = Vec::new();
         for var in &info.vars {
             let segments = tree_a.segments(var.name);
             if let Some(b_name_id) = tree_b.find(&segments) {
                 if let Some(b_handles) = name_id_to_handles_b.get(&b_name_id) {
                     for &handle_b in b_handles {
-                        if !handles_b.contains(&handle_b) {
-                            handles_b.push(handle_b);
+                        if !matches.iter().any(|m: &HandleMatch| {
+                            m.name_a == var.name && m.name_b == b_name_id && m.handle_b == handle_b
+                        }) {
+                            matches.push(HandleMatch {
+                                name_a: var.name,
+                                name_b: b_name_id,
+                                handle_b,
+                            });
                         }
                     }
                 }
             }
         }
-        if !handles_b.is_empty() {
-            handle_mapping.insert(handle_a, handles_b);
+        if !matches.is_empty() {
+            handle_mapping.insert(handle_a, matches);
         }
     }
 
@@ -287,17 +316,17 @@ fn build_handle_mapping(
 
 /// A single signal value change (handle + value; time is on the enclosing TimeBatch).
 #[derive(Debug)]
-struct SignalChange {
-    handle: usize,
-    value: OwnedSignalValue,
+pub(crate) struct SignalChange {
+    pub(crate) handle: usize,
+    pub(crate) value: OwnedSignalValue,
 }
 
 /// A batch of signal changes all at the same simulation time.
 /// Batches are capped at BATCH_SIZE; a single time step may span multiple batches.
 #[derive(Debug)]
-struct TimeBatch {
-    time: u64,
-    changes: Vec<SignalChange>,
+pub(crate) struct TimeBatch {
+    pub(crate) time: u64,
+    pub(crate) changes: Vec<SignalChange>,
 }
 
 /// Flush the current batch through `tx`, replacing it with a fresh empty vec.
@@ -380,43 +409,8 @@ fn read_and_send_signals<R: BufRead + Seek>(
     Ok(())
 }
 
-/// Format signal names for a handle on-demand from SignalMap + NameTree.
-/// Only called on diff output lines, so the cost is proportional to mismatches.
-fn format_handle_names(handle: usize, map: &SignalMap, tree: &NameTree) -> Vec<String> {
-    match map.get(&handle) {
-        Some(info) => info.vars.iter().map(|v| tree.format_path(v.name)).collect(),
-        None => Vec::new(),
-    }
-}
-
-/// Write a `value1 != value2` row for every name `handle1` resolves to in file1.
-fn emit_value_diff<W: Write>(
-    writer: &mut W,
-    handle1: usize,
-    hier1: &WaveHierarchy,
-    time: u64,
-    value1: &OwnedSignalValue,
-    value2: &OwnedSignalValue,
-) -> std::io::Result<()> {
-    for name in format_handle_names(handle1, &hier1.signal_map, &hier1.names) {
-        writeln!(writer, "{} {} {} != {}", time, name, value1, value2)?;
-    }
-    Ok(())
-}
-
-/// Write a single `value (only in file2)` row for an already-resolved name.
-fn emit_file2_only<W: Write>(
-    writer: &mut W,
-    name: &str,
-    time: u64,
-    value: &OwnedSignalValue,
-) -> std::io::Result<()> {
-    writeln!(writer, "{} {} {} (only in file2)", time, name, value)
-}
-
-/// Record the first trailing-sample trim seen on a side (keeps the earliest).
-fn note_trim(trim: &mut Option<TrimReport>, side: DiffSide, trim_time: u64) {
-    trim.get_or_insert(TrimReport { side, trim_time });
+fn format_name(name: crate::NameId, tree: &NameTree) -> String {
+    tree.format_path(name)
 }
 
 struct CompareSignalContext<'a> {
@@ -426,21 +420,70 @@ struct CompareSignalContext<'a> {
     ignore_xz: bool,
 }
 
+/// Push a `value1 != value2` row for `name_a` and record it for fst-diff.
+fn emit_value_diff(
+    rows: &mut DiffReportRows,
+    fst_diff: &mut Option<&mut FstDiffRecorder>,
+    hier1: &WaveHierarchy,
+    name_a: crate::NameId,
+    time: u64,
+    value1: &OwnedSignalValue,
+    value2: &OwnedSignalValue,
+) {
+    let name = format_name(name_a, &hier1.names);
+    rows.push(
+        time,
+        name.clone(),
+        format!("{} {} {} != {}", time, name, value1, value2),
+    );
+    if let Some(recorder) = fst_diff.as_deref_mut() {
+        let segments = hier1.names.segments(name_a);
+        recorder.record_diff(&segments);
+    }
+}
+
+/// Push `value (only in file2)` rows for every name `handle2` resolves to and
+/// record them for fst-diff.
+fn emit_file2_only(
+    rows: &mut DiffReportRows,
+    fst_diff: &mut Option<&mut FstDiffRecorder>,
+    hier2: &WaveHierarchy,
+    handle2: usize,
+    time: u64,
+    value: &OwnedSignalValue,
+) {
+    let Some(info) = hier2.signal_map.get(&handle2) else {
+        return;
+    };
+    for var in &info.vars {
+        let name = hier2.names.format_path(var.name);
+        rows.push(
+            time,
+            name.clone(),
+            format!("{} {} {} (only in file2)", time, name, value),
+        );
+        if let Some(recorder) = fst_diff.as_deref_mut() {
+            let segments = hier2.names.segments(var.name);
+            recorder.record_side2_only(&segments);
+        }
+    }
+}
+
+/// Record the first trailing-sample trim seen on a side (keeps the earliest).
+fn note_trim(trim: &mut Option<TrimReport>, side: DiffSide, trim_time: u64) {
+    trim.get_or_insert(TrimReport { side, trim_time });
+}
+
 /// Consumes batches from `rx1` (file1) and `rx2` (file2), buffering as needed to
 /// match signals across potentially different orderings.
 fn compare_signal_channels<W: Write>(
     writer: &mut W,
     rx1: channel::Receiver<TimeBatch>,
     rx2: channel::Receiver<TimeBatch>,
-    handle_mapping: &HashMap<usize, Vec<usize>>,
+    handle_mapping: &HashMap<usize, Vec<HandleMatch>>,
     context: CompareSignalContext<'_>,
+    mut fst_diff: Option<&mut FstDiffRecorder>,
 ) -> std::io::Result<DiffReport> {
-    let CompareSignalContext {
-        hier1,
-        hier2,
-        real_epsilon,
-        ignore_xz,
-    } = context;
     let mut has_differences = false;
     let mut trim = None;
     // File2 changes we've read from the channel but haven't matched yet,
@@ -452,6 +495,7 @@ fn compare_signal_channels<W: Write>(
     let mut prev_time: Option<u64> = None;
     let mut source2_ended = false;
     let mut last_time2: Option<u64> = None;
+    let mut diff_rows = DiffReportRows::default();
 
     // Drive the comparison from file1's batch stream.  Even after file2
     // ends, keep draining file1 instead of breaking: rx1 is bounded, so
@@ -477,8 +521,9 @@ fn compare_signal_channels<W: Write>(
         prev_time = Some(t1);
 
         for change1 in batch1.changes {
-            if let Some(handles2) = handle_mapping.get(&change1.handle) {
-                for &handle2 in handles2 {
+            if let Some(matches) = handle_mapping.get(&change1.handle) {
+                for matched in matches {
+                    let handle2 = matched.handle_b;
                     let mut found = buffered2.get(&(t1, handle2)).cloned();
                     let mut saw_time_in_source2 = false;
 
@@ -517,22 +562,23 @@ fn compare_signal_channels<W: Write>(
                     if let Some(value2) = found {
                         matched_at_current_time.insert(handle2);
                         let use_real_epsilon =
-                            handles_are_real(hier1, change1.handle, hier2, handle2);
+                            handles_are_real(context.hier1, change1.handle, context.hier2, handle2);
                         if !change1.value.approx_eq(
                             &value2,
-                            real_epsilon,
+                            context.real_epsilon,
                             use_real_epsilon,
-                            ignore_xz,
+                            context.ignore_xz,
                         ) {
                             has_differences = true;
                             emit_value_diff(
-                                writer,
-                                change1.handle,
-                                hier1,
+                                &mut diff_rows,
+                                &mut fst_diff,
+                                context.hier1,
+                                matched.name_a,
                                 t1,
                                 &change1.value,
                                 &value2,
-                            )?;
+                            );
                         }
                     } else {
                         if source2_ended && last_time2.is_none_or(|t2| t1 >= t2) {
@@ -545,10 +591,15 @@ fn compare_signal_channels<W: Write>(
                         } else {
                             "(missing time in file2)"
                         };
-                        for name in
-                            format_handle_names(change1.handle, &hier1.signal_map, &hier1.names)
-                        {
-                            writeln!(writer, "{} {} {} {}", t1, name, change1.value, msg)?;
+                        let name = format_name(matched.name_a, &context.hier1.names);
+                        diff_rows.push(
+                            t1,
+                            name.clone(),
+                            format!("{} {} {} {}", t1, name, change1.value, msg),
+                        );
+                        if let Some(recorder) = fst_diff.as_deref_mut() {
+                            let segments = context.hier1.names.segments(matched.name_a);
+                            recorder.record_diff(&segments);
                         }
                     }
                 }
@@ -570,7 +621,7 @@ fn compare_signal_channels<W: Write>(
     // iteration order.
     let owned: Vec<((u64, usize), OwnedSignalValue)> = buffered2
         .drain()
-        .filter(|((_t, h), _)| hier2.signal_map.contains_key(h))
+        .filter(|((_t, h), _)| context.hier2.signal_map.contains_key(h))
         .collect();
     if owned
         .iter()
@@ -578,19 +629,19 @@ fn compare_signal_channels<W: Write>(
     {
         has_differences = true;
     }
-    let mut file2_only_rows: Vec<(u64, String, usize)> = Vec::new();
-    for (idx, ((time, handle), _)) in owned.iter().enumerate() {
+    for ((time, handle), value) in &owned {
         if prev_time.is_none_or(|t1| *time >= t1) {
             note_trim(&mut trim, DiffSide::Second, prev_time.unwrap_or(0));
             continue;
         }
-        for name in format_handle_names(*handle, &hier2.signal_map, &hier2.names) {
-            file2_only_rows.push((*time, name, idx));
-        }
-    }
-    file2_only_rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    for (time, name, idx) in file2_only_rows {
-        emit_file2_only(writer, &name, time, &owned[idx].1)?;
+        emit_file2_only(
+            &mut diff_rows,
+            &mut fst_diff,
+            context.hier2,
+            *handle,
+            *time,
+            value,
+        );
     }
 
     // Drain any remaining file2 batches we never read from the channel.
@@ -599,7 +650,7 @@ fn compare_signal_channels<W: Write>(
     if !source2_ended {
         for batch2 in &rx2 {
             for change2 in &batch2.changes {
-                if !hier2.signal_map.contains_key(&change2.handle) {
+                if !context.hier2.signal_map.contains_key(&change2.handle) {
                     continue;
                 }
                 if prev_time.is_none_or(|t1| batch2.time >= t1) {
@@ -607,16 +658,26 @@ fn compare_signal_channels<W: Write>(
                     continue;
                 }
                 has_differences = true;
-                for name in format_handle_names(change2.handle, &hier2.signal_map, &hier2.names) {
-                    emit_file2_only(writer, &name, batch2.time, &change2.value)?;
-                }
+                emit_file2_only(
+                    &mut diff_rows,
+                    &mut fst_diff,
+                    context.hier2,
+                    change2.handle,
+                    batch2.time,
+                    &change2.value,
+                );
             }
         }
     }
 
+    diff_rows.write(writer)?;
+
     Ok(DiffReport {
         has_differences,
         trim,
+        fst_diff_signal_count: fst_diff
+            .as_ref()
+            .map_or(0, |recorder| recorder.signal_count()),
     })
 }
 
@@ -646,37 +707,50 @@ fn compare_signal_channels_stateful<W: Write>(
     writer: &mut W,
     rx1: channel::Receiver<TimeBatch>,
     rx2: channel::Receiver<TimeBatch>,
-    handle_mapping: &HashMap<usize, Vec<usize>>,
+    handle_mapping: &HashMap<usize, Vec<HandleMatch>>,
     context: CompareSignalContext<'_>,
+    mut fst_diff: Option<&mut FstDiffRecorder>,
 ) -> std::io::Result<DiffReport> {
-    let CompareSignalContext {
-        hier1,
-        hier2,
-        real_epsilon,
-        ignore_xz,
-    } = context;
     let mut has_differences = false;
     let mut trim = None;
+    let mut diff_rows = DiffReportRows::default();
 
-    // Flatten the file1->file2 handle mapping into (handle1, handle2) pairs plus
-    // reverse indices so a change on either side finds the pairs it touches.
-    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    // Flatten the file1->file2 handle mapping into matched pairs plus reverse
+    // indices so a change on either side finds the pairs it touches. Each pair
+    // keeps its own file1 name so aliased ids report every name once.
+    struct MatchedPair {
+        handle1: usize,
+        handle2: usize,
+        name_a: crate::NameId,
+        use_real_epsilon: bool,
+    }
+    let mut pairs: Vec<MatchedPair> = Vec::new();
     let mut a_to_pairs: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut b_to_pairs: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (&handle1, handles2) in handle_mapping {
-        for &handle2 in handles2 {
+    for (&handle1, matches) in handle_mapping {
+        for matched in matches {
             let pair = pairs.len();
-            pairs.push((handle1, handle2));
+            pairs.push(MatchedPair {
+                handle1,
+                handle2: matched.handle_b,
+                name_a: matched.name_a,
+                use_real_epsilon: handles_are_real(
+                    context.hier1,
+                    handle1,
+                    context.hier2,
+                    matched.handle_b,
+                ),
+            });
             a_to_pairs.entry(handle1).or_default().push(pair);
-            b_to_pairs.entry(handle2).or_default().push(pair);
+            b_to_pairs.entry(matched.handle_b).or_default().push(pair);
         }
     }
-    let pair_real: Vec<bool> = pairs
-        .iter()
-        .map(|&(h1, h2)| handles_are_real(hier1, h1, hier2, h2))
-        .collect();
 
-    // Last-known value per side, keyed by handle. `None` until first seen.
+    // Which side(s) held X-like bits in matches that only passed thanks to
+    // X/Z-masking. Under --ignore-xz we assume X-like bits come from a single side.
+    let mut masked_x_sides = crate::fst_diff::SidePair::<bool>::default();
+
+    // Last-known value per side, keyed by handle. Absent until first seen.
     let mut held1: HashMap<usize, OwnedSignalValue> = HashMap::new();
     let mut held2: HashMap<usize, OwnedSignalValue> = HashMap::new();
 
@@ -710,10 +784,8 @@ fn compare_signal_channels_stateful<W: Write>(
             continue;
         }
 
+        // Pairs whose held state changed at this time; recompared once each.
         let mut changed: HashSet<usize> = HashSet::new();
-        // (name, full line) rows produced at this time, sorted by name before
-        // writing so output does not depend on stream/HashMap ordering.
-        let mut rows: Vec<(String, String)> = Vec::new();
 
         if t1 == Some(t) {
             for change in drain_time(&rx1, &mut head1, t) {
@@ -730,46 +802,74 @@ fn compare_signal_channels_stateful<W: Write>(
                 if let Some(pids) = b_to_pairs.get(&change.handle) {
                     changed.extend(pids.iter().copied());
                     held2.insert(change.handle, change.value);
-                } else if hier2.signal_map.contains_key(&change.handle) {
-                    for name in format_handle_names(change.handle, &hier2.signal_map, &hier2.names)
-                    {
-                        has_differences = true;
-                        rows.push((
-                            name.clone(),
-                            format!("{} {} {} (only in file2)", t, name, change.value),
-                        ));
-                    }
+                } else if context.hier2.signal_map.contains_key(&change.handle) {
+                    has_differences = true;
+                    emit_file2_only(
+                        &mut diff_rows,
+                        &mut fst_diff,
+                        context.hier2,
+                        change.handle,
+                        t,
+                        &change.value,
+                    );
                 }
             }
             last_t2 = Some(t);
         }
 
         for pair in changed {
-            let (handle1, handle2) = pairs[pair];
-            let (Some(value1), Some(value2)) = (held1.get(&handle1), held2.get(&handle2)) else {
+            let pair = &pairs[pair];
+            let (Some(value1), Some(value2)) = (held1.get(&pair.handle1), held2.get(&pair.handle2))
+            else {
                 // Skip until both sides have produced a value.
                 continue;
             };
-            if !value1.approx_eq(value2, real_epsilon, pair_real[pair], ignore_xz) {
-                for name in format_handle_names(handle1, &hier1.signal_map, &hier1.names) {
-                    has_differences = true;
-                    rows.push((
-                        name.clone(),
-                        format!("{} {} {} != {}", t, name, value1, value2),
-                    ));
-                }
+            if !value1.approx_eq(
+                value2,
+                context.real_epsilon,
+                pair.use_real_epsilon,
+                context.ignore_xz,
+            ) {
+                has_differences = true;
+                emit_value_diff(
+                    &mut diff_rows,
+                    &mut fst_diff,
+                    context.hier1,
+                    pair.name_a,
+                    t,
+                    value1,
+                    value2,
+                );
+            } else {
+                // Matched only thanks to X/Z-masking: note which side held X-like bits
+                // so the fst emitter can copy shared values from that side.
+                masked_x_sides.side1 |= value1.has_x_like_bits();
+                masked_x_sides.side2 |= value2.has_x_like_bits();
             }
         }
+    }
 
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
-        for (_name, line) in rows {
-            writeln!(writer, "{}", line)?;
-        }
+    diff_rows.write(writer)?;
+
+    // Validate the single-X-like-side invariant only after the full report is
+    // written, so the text diff is complete even when the invariant fails.
+    // Checked for every --ignore-xz run: if both sides hold X-like bits, masking is
+    // hiding real discrepancies and the user should compare Xs directly.
+    if masked_x_sides.side1 && masked_x_sides.side2 {
+        return Err(io::Error::other(
+            "wavediff --ignore-xz: both sides hold X-like bits; drop --ignore-xz to compare them",
+        ));
+    }
+    if let Some(recorder) = fst_diff.as_deref_mut() {
+        recorder.set_masked_x_sides(&masked_x_sides);
     }
 
     Ok(DiffReport {
         has_differences,
         trim,
+        fst_diff_signal_count: fst_diff
+            .as_ref()
+            .map_or(0, |recorder| recorder.signal_count()),
     })
 }
 
@@ -840,7 +940,7 @@ fn send_wave_changes(
 ///
 /// Each inner reader produces same-time `TimeBatch`es. The k-way merge picks the
 /// batch with the smallest time and forwards it directly -- no re-batching needed.
-fn send_merged_wave_changes(
+pub(crate) fn send_merged_wave_changes(
     readers: Vec<WaveReader>,
     offsets: &[usize],
     include_sets: Option<Vec<HashSet<usize>>>,
@@ -1071,6 +1171,14 @@ pub fn diff_wave_sets_with_report<W: Write>(
         send_merged_wave_changes(readers2, &offsets2, include_sets2, start, end, tx2)
     });
 
+    let mut fst_diff = output_options
+        .fst_diff
+        .as_ref()
+        .map(|_| FstDiffRecorder::new());
+    if let Some(recorder) = fst_diff.as_mut() {
+        recorder.record_matching_candidates(&hier1, &hier2);
+        recorder.record_asymmetric_candidates(&hier1, &hier2);
+    }
     let context = CompareSignalContext {
         hier1: &hier1,
         hier2: &hier2,
@@ -1078,9 +1186,23 @@ pub fn diff_wave_sets_with_report<W: Write>(
         ignore_xz: output_options.ignore_xz,
     };
     let result = if output_options.ignore_xz {
-        compare_signal_channels_stateful(writer, rx1, rx2, &handle_mapping, context)
+        compare_signal_channels_stateful(
+            writer,
+            rx1,
+            rx2,
+            &handle_mapping,
+            context,
+            fst_diff.as_mut(),
+        )
     } else {
-        compare_signal_channels(writer, rx1, rx2, &handle_mapping, context)
+        compare_signal_channels(
+            writer,
+            rx1,
+            rx2,
+            &handle_mapping,
+            context,
+            fst_diff.as_mut(),
+        )
     };
 
     let thread1_result = match thread1.join() {
@@ -1092,9 +1214,23 @@ pub fn diff_wave_sets_with_report<W: Write>(
         Err(_) => Err(io::Error::other("wavediff set2 reader thread panicked")),
     };
 
-    let report = result?;
+    let mut report = result?;
     thread1_result?;
     thread2_result?;
+
+    if let (Some(output), Some(recorder)) = (&output_options.fst_diff, fst_diff) {
+        report.fst_diff_signal_count = recorder.signal_count();
+        if report.fst_diff_signal_count > 0 {
+            let fst_end = report.trim.as_ref().map_or(options.end, |trim| {
+                Some(
+                    options
+                        .end
+                        .map_or(trim.trim_time, |end| end.min(trim.trim_time)),
+                )
+            });
+            recorder.write_fst(output, options.start, fst_end)?;
+        }
+    }
 
     Ok(report)
 }
