@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+args=()
+if [[ "${1:-}" == "--check" ]]; then
+    args+=(--check)
+    shift
+fi
+
+if (($# != 0)); then
+    echo "usage: $0 [--check]" >&2
+    exit 2
+fi
+
+mapfile -t files < <(git ls-files '*.rs' ':!:src/vcd/**')
+if ((${#files[@]} == 0)); then
+    exit 0
+fi
+
+rustfmt --edition 2021 --config skip_children=true "${args[@]}" "${files[@]}"

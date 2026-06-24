@@ -65,15 +65,15 @@ fn split_range_suffix(s: &str) -> (&str, &str) {
         return (s, "");
     }
     // Try " [" first (standard format), then bare "[" (no_range_space format)
-    let split_pos = s.rfind(" [").or_else(|| {
-        s.rfind('[').filter(|&pos| pos > 0)
-    });
+    let split_pos = s
+        .rfind(" [")
+        .or_else(|| s.rfind('[').filter(|&pos| pos > 0));
     if let Some(pos) = split_pos {
         // Extract bracket content and verify it's a numeric range
         let bracket_start = s[pos..].find('[').unwrap() + pos + 1;
         let content = &s[bracket_start..s.len() - 1];
-        let is_numeric_range = !content.is_empty()
-            && content.chars().all(|c| c.is_ascii_digit() || c == ':');
+        let is_numeric_range =
+            !content.is_empty() && content.chars().all(|c| c.is_ascii_digit() || c == ':');
         if is_numeric_range {
             return (&s[..pos], &s[pos..]);
         }
@@ -436,9 +436,9 @@ fn build_hierarchy<R: BufRead + Seek>(
                     FstVarType::Real | FstVarType::RealParameter | FstVarType::RealTime => 64,
                     _ => length,
                 };
-                let entry = signal_map.entry(idx).or_insert_with(|| SignalInfo {
-                    vars: Vec::new(),
-                });
+                let entry = signal_map
+                    .entry(idx)
+                    .or_insert_with(|| SignalInfo { vars: Vec::new() });
                 entry.vars.push(VarEntry {
                     name: leaf,
                     meta: VarMeta {
@@ -472,22 +472,44 @@ fn build_hierarchy<R: BufRead + Seek>(
                     }
                 }
             }
-            FstHierarchyEntry::Array { name, array_type, left, right } => {
+            FstHierarchyEntry::Array {
+                name,
+                array_type,
+                left,
+                right,
+            } => {
                 if let Some(var_idx) = last_handle {
-                    push_attr(&mut signal_map, var_idx,
-                        format_array_attr(&name, array_type, left, right));
+                    push_attr(
+                        &mut signal_map,
+                        var_idx,
+                        format_array_attr(&name, array_type, left, right),
+                    );
                 }
             }
-            FstHierarchyEntry::Pack { name, pack_type, value } => {
+            FstHierarchyEntry::Pack {
+                name,
+                pack_type,
+                value,
+            } => {
                 if let Some(var_idx) = last_handle {
-                    push_attr(&mut signal_map, var_idx,
-                        format_pack_attr(&name, pack_type, value));
+                    push_attr(
+                        &mut signal_map,
+                        var_idx,
+                        format_pack_attr(&name, pack_type, value),
+                    );
                 }
             }
-            FstHierarchyEntry::SVEnum { name, enum_type, value } => {
+            FstHierarchyEntry::SVEnum {
+                name,
+                enum_type,
+                value,
+            } => {
                 if let Some(var_idx) = last_handle {
-                    push_attr(&mut signal_map, var_idx,
-                        format_sv_enum_attr(&name, enum_type, value));
+                    push_attr(
+                        &mut signal_map,
+                        var_idx,
+                        format_sv_enum_attr(&name, enum_type, value),
+                    );
                 }
             }
             _ => {}
@@ -564,7 +586,11 @@ pub(crate) fn next_vcd_change(
             }
             vcd::Command::ChangeScalar(id, val) => {
                 if let Some(&idx) = vcd_data.id_to_idx.get(&id) {
-                    return Ok(Some((vcd_data.current_time, idx, vcd_value_char(val).to_string())));
+                    return Ok(Some((
+                        vcd_data.current_time,
+                        idx,
+                        vcd_value_char(val).to_string(),
+                    )));
                 }
             }
             vcd::Command::ChangeVector(id, ref vec) => {
@@ -599,7 +625,11 @@ type EnumNameRegistry = HashMap<String, Vec<(String, String)>>;
 
 /// Format enum mapping pairs as "k=v k=v ..." for display.
 fn format_mapping(mapping: &[(String, String)]) -> String {
-    mapping.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join(" ")
+    mapping
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Check whether a fully qualified enum definition conflicts with a previous one.
@@ -771,9 +801,10 @@ impl<'a> VcdHierarchyBuilder<'a> {
                         None => ref_name,
                     };
                     let leaf = self.tree.intern(scope_id, &name);
-                    let entry = self.signal_map.entry(idx).or_insert_with(|| SignalInfo {
-                        vars: Vec::new(),
-                    });
+                    let entry = self
+                        .signal_map
+                        .entry(idx)
+                        .or_insert_with(|| SignalInfo { vars: Vec::new() });
                     entry.vars.push(VarEntry {
                         name: leaf,
                         meta: VarMeta {
@@ -788,8 +819,8 @@ impl<'a> VcdHierarchyBuilder<'a> {
                     // For misc 07 (enum table): distinguish definitions from references.
                     // Definitions have a non-empty, non-"" name with the full enum details.
                     // References have "" as the name and the handle as arg.
-                    let is_enum_table = attr.attr_type == vcd::AttributeType::Misc
-                        && attr.subtype == "07";
+                    let is_enum_table =
+                        attr.attr_type == vcd::AttributeType::Misc && attr.subtype == "07";
                     if is_enum_table {
                         let name_trimmed = attr.name.trim_matches('"');
                         if !name_trimmed.is_empty() {
@@ -797,16 +828,27 @@ impl<'a> VcdHierarchyBuilder<'a> {
                                 check_enum_conflict(&mut self.enum_names, &parsed.0, &parsed.1)?;
                                 self.enum_tables.insert(attr.arg, parsed.clone());
                                 if let Some(idx) = last_idx {
-                                    push_attr(&mut self.signal_map, idx, format_enum_attr(&parsed.0, &parsed.1));
+                                    push_attr(
+                                        &mut self.signal_map,
+                                        idx,
+                                        format_enum_attr(&parsed.0, &parsed.1),
+                                    );
                                 }
                             }
                         } else if let Some(idx) = last_idx {
                             if let Some((name, mapping)) = self.enum_tables.get(&attr.arg) {
-                                push_attr(&mut self.signal_map, idx, format_enum_attr(name, mapping));
+                                push_attr(
+                                    &mut self.signal_map,
+                                    idx,
+                                    format_enum_attr(name, mapping),
+                                );
                             }
                         }
                     } else if let Some(idx) = last_idx {
-                        let attr_str = format!("{} {}: {} {}", attr.attr_type, attr.subtype, attr.name, attr.arg);
+                        let attr_str = format!(
+                            "{} {}: {} {}",
+                            attr.attr_type, attr.subtype, attr.name, attr.arg
+                        );
                         push_attr(&mut self.signal_map, idx, attr_str);
                     }
                 }
@@ -854,7 +896,11 @@ pub fn write_attrs<W: Write>(
 
     for (name, meta, attrs) in entries {
         if meta.direction != IMPLICIT_DIRECTION {
-            writeln!(writer, "{}  {}  {}  {}", name, meta.var_type, meta.size, meta.direction)?;
+            writeln!(
+                writer,
+                "{}  {}  {}  {}",
+                name, meta.var_type, meta.size, meta.direction
+            )?;
         } else {
             writeln!(writer, "{}  {}  {}", name, meta.var_type, meta.size)?;
         }

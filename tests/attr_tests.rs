@@ -84,22 +84,38 @@ fn test_enum_attr_format_vcd() {
 #[test]
 fn test_meta_self_comparison_vcd() {
     // A file compared to itself should have no meta diffs
-    let (_, hier) =
-        open_wave_file(Path::new("tests/data/struct_attrs.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier) = open_wave_file(
+        Path::new("tests/data/struct_attrs.vcd"),
+        &NameOptions::default(),
+    )
+    .unwrap();
     let diffs = compare_signal_meta(&hier, &hier);
-    assert!(diffs.is_empty(), "Self-comparison should have no diffs: {:?}", diffs);
+    assert!(
+        diffs.is_empty(),
+        "Self-comparison should have no diffs: {:?}",
+        diffs
+    );
 }
 
 #[test]
 fn test_meta_comparison_enum_files() {
     // enum_attrs.a.vcd and enum_attrs.b.vcd should differ in enum attrs
-    let (_, hier_a) =
-        open_wave_file(Path::new("tests/data/enum_attrs.a.vcd"), &NameOptions::default()).unwrap();
-    let (_, hier_b) =
-        open_wave_file(Path::new("tests/data/enum_attrs.b.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_a) = open_wave_file(
+        Path::new("tests/data/enum_attrs.a.vcd"),
+        &NameOptions::default(),
+    )
+    .unwrap();
+    let (_, hier_b) = open_wave_file(
+        Path::new("tests/data/enum_attrs.b.vcd"),
+        &NameOptions::default(),
+    )
+    .unwrap();
     let diffs = compare_signal_meta(&hier_a, &hier_b);
     // They should differ (enum_attrs.b has different enum mapping)
-    assert!(!diffs.is_empty(), "Expected meta diffs between a and b enum files");
+    assert!(
+        !diffs.is_empty(),
+        "Expected meta diffs between a and b enum files"
+    );
 }
 
 // ---- CLI tests for struct attrs ----
@@ -121,10 +137,7 @@ fn test_cli_struct_attrs_output() {
 #[test]
 fn test_cli_struct_attrs_self_diff() {
     // Diffing struct_attrs.vcd against itself should produce no differences
-    let output = run_wavediff_cli(&[
-        "tests/data/struct_attrs.vcd",
-        "tests/data/struct_attrs.vcd",
-    ]);
+    let output = run_wavediff_cli(&["tests/data/struct_attrs.vcd", "tests/data/struct_attrs.vcd"]);
     assert!(
         output.status.success(),
         "Expected exit 0, stderr: {}",
