@@ -302,6 +302,31 @@ fn format_handle_names(handle: usize, map: &SignalMap, tree: &NameTree) -> Vec<S
     }
 }
 
+/// Write a `value1 != value2` row for every name `handle1` resolves to in file1.
+fn emit_value_diff<W: Write>(
+    writer: &mut W,
+    handle1: usize,
+    hier1: &WaveHierarchy,
+    time: u64,
+    value1: &OwnedSignalValue,
+    value2: &OwnedSignalValue,
+) -> std::io::Result<()> {
+    for name in format_handle_names(handle1, &hier1.signal_map, &hier1.names) {
+        writeln!(writer, "{} {} {} != {}", time, name, value1, value2)?;
+    }
+    Ok(())
+}
+
+/// Write a single `value (only in file2)` row for an already-resolved name.
+fn emit_file2_only<W: Write>(
+    writer: &mut W,
+    name: &str,
+    time: u64,
+    value: &OwnedSignalValue,
+) -> std::io::Result<()> {
+    writeln!(writer, "{} {} {} (only in file2)", time, name, value)
+}
+
 /// Consumes batches from `rx1` (file1) and `rx2` (file2), buffering as needed to
 /// match signals across potentially different orderings. Returns `true` if differences
 /// were found.
@@ -385,15 +410,14 @@ fn compare_signal_channels<W: Write>(
                             .approx_eq(&value2, real_epsilon, use_real_epsilon)
                         {
                             has_differences = true;
-                            for name in
-                                format_handle_names(change1.handle, &hier1.signal_map, &hier1.names)
-                            {
-                                writeln!(
-                                    writer,
-                                    "{} {} {} != {}",
-                                    t1, name, change1.value, value2
-                                )?;
-                            }
+                            emit_value_diff(
+                                writer,
+                                change1.handle,
+                                hier1,
+                                t1,
+                                &change1.value,
+                                &value2,
+                            )?;
                         }
                     } else {
                         has_differences = true;
@@ -440,7 +464,7 @@ fn compare_signal_channels<W: Write>(
     }
     file2_only_rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     for (time, name, idx) in file2_only_rows {
-        writeln!(writer, "{} {} {} (only in file2)", time, name, owned[idx].1)?;
+        emit_file2_only(writer, &name, time, &owned[idx].1)?;
     }
 
     // Drain any remaining file2 batches we never read from the channel.
@@ -454,11 +478,7 @@ fn compare_signal_channels<W: Write>(
                 }
                 has_differences = true;
                 for name in format_handle_names(change2.handle, &hier2.signal_map, &hier2.names) {
-                    writeln!(
-                        writer,
-                        "{} {} {} (only in file2)",
-                        batch2.time, name, change2.value
-                    )?;
+                    emit_file2_only(writer, &name, batch2.time, &change2.value)?;
                 }
             }
         }
