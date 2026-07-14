@@ -94,12 +94,7 @@ fn test_no_non_ascii_characters() {
         let contents = std::fs::read_to_string(file).unwrap();
         for (line_num, line) in contents.lines().enumerate() {
             if line.bytes().any(|b| b > 127) {
-                violations.push(format!(
-                    "{}:{}: {}",
-                    file.display(),
-                    line_num + 1,
-                    line,
-                ));
+                violations.push(format!("{}:{}: {}", file.display(), line_num + 1, line,));
             }
         }
     }

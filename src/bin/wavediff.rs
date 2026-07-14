@@ -24,7 +24,9 @@ const VERSION: &str = concat!(
 #[derive(Parser, Debug)]
 #[command(name = "wavediff")]
 #[command(version = VERSION)]
-#[command(about = "Compare two waveform files (FST or VCD)", long_about = "\
+#[command(
+    about = "Compare two waveform files (FST or VCD)",
+    long_about = "\
 Compare two waveform files (FST or VCD format) by signal name and value.
 Multiple files can be combined into each side using --set1 and --set2.
 When both --set1 and --set2 are provided, positional FILE arguments are not needed.
@@ -40,7 +42,8 @@ Examples:
   wavediff --epsilon 0.001 analog1.fst analog2.vcd
   wavediff --set1 extra1.vcd baseline.vcd current.vcd
   wavediff --set1 clk.vcd --set1 regs.vcd --set2 counter.vcd
-  wavediff --set1 clk.vcd --set1 regs.vcd --set2 clk.vcd --set2 regs_new.vcd baseline.vcd current.vcd")]
+  wavediff --set1 clk.vcd --set1 regs.vcd --set2 clk.vcd --set2 regs_new.vcd baseline.vcd current.vcd"
+)]
 struct Args {
     /// First waveform file to compare (FST or VCD)
     file1: Option<PathBuf>,
@@ -121,10 +124,7 @@ fn report_name_mismatch(
     true
 }
 
-fn report_meta_diffs(
-    hier1: &WaveHierarchy,
-    hier2: &WaveHierarchy,
-) -> bool {
+fn report_meta_diffs(hier1: &WaveHierarchy, hier2: &WaveHierarchy) -> bool {
     let meta_diffs = compare_signal_meta(hier1, hier2);
     if !meta_diffs.is_empty() {
         let mut stderr = std::io::stderr();
@@ -201,12 +201,8 @@ fn run(args: Args) -> Result<bool, String> {
         real_epsilon: args.epsilon,
     };
     let mut stdout = std::io::stdout();
-    let value_diffs = diff_wave_sets(
-        &mut stdout,
-        sets,
-        &diff_options,
-    )
-    .map_err(|e| format!("Failed to diff files: {}", e))?;
+    let value_diffs = diff_wave_sets(&mut stdout, sets, &diff_options)
+        .map_err(|e| format!("Failed to diff files: {}", e))?;
 
     Ok(has_differences || value_diffs)
 }

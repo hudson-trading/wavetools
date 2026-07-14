@@ -8,7 +8,10 @@
 
 use std::path::Path;
 
-use wavetools::{names_only, open_wave_file, write_attrs, write_names, write_signals_wave, NameOptions, SignalOutputOptions};
+use wavetools::{
+    names_only, open_wave_file, write_attrs, write_names, write_signals_wave, NameOptions,
+    SignalOutputOptions,
+};
 
 /// Strip the .fst or .vcd extension to get the base name used for expected files.
 fn base_name(path: &Path) -> String {
@@ -75,7 +78,14 @@ fn test_cat(path: &Path) -> datatest_stable::Result<()> {
         time_pound: false,
     };
     let mut output = Vec::new();
-    write_signals_wave(&mut output, &mut reader, &handle_to_names, 0, None, &options)?;
+    write_signals_wave(
+        &mut output,
+        &mut reader,
+        &handle_to_names,
+        0,
+        None,
+        &options,
+    )?;
     let actual = String::from_utf8(output)?;
 
     assert_eq!(actual, expected, "cat mismatch for {}", path.display());

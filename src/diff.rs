@@ -81,12 +81,7 @@ impl OwnedSignalValue {
     }
 
     /// Compare two values, using epsilon for real-valued signals when provided.
-    fn approx_eq(
-        &self,
-        other: &Self,
-        real_epsilon: Option<f64>,
-        use_real_epsilon: bool,
-    ) -> bool {
+    fn approx_eq(&self, other: &Self, real_epsilon: Option<f64>, use_real_epsilon: bool) -> bool {
         match (self, other, real_epsilon.filter(|_| use_real_epsilon)) {
             (OwnedSignalValue::Real(a), OwnedSignalValue::Real(b), Some(eps)) => {
                 (a - b).abs() <= eps
@@ -114,7 +109,10 @@ impl OwnedSignalValue {
 }
 
 fn is_real_var_type(var_type: &str) -> bool {
-    matches!(var_type, "real" | "realtime" | "shortreal" | "real_parameter")
+    matches!(
+        var_type,
+        "real" | "realtime" | "shortreal" | "real_parameter"
+    )
 }
 
 fn handle_is_real(map: &SignalMap, handle: usize) -> bool {
@@ -218,7 +216,10 @@ struct TimeBatch {
 /// Flush the current batch through `tx`, replacing it with a fresh empty vec.
 fn flush_batch(tx: &channel::Sender<TimeBatch>, time: u64, changes: &mut Vec<SignalChange>) {
     let full = std::mem::replace(changes, Vec::with_capacity(BATCH_SIZE));
-    let _ = tx.send(TimeBatch { time, changes: full });
+    let _ = tx.send(TimeBatch {
+        time,
+        changes: full,
+    });
 }
 
 /// Build per-reader local handle include sets from a filtered merged signal map.
@@ -284,7 +285,10 @@ fn read_and_send_signals<R: BufRead + Seek>(
     });
     read_result.map_err(|e| io::Error::other(format!("Failed to read signals: {}", e)))?;
     if !batch.is_empty() {
-        let _ = tx.send(TimeBatch { time: batch_time, changes: batch });
+        let _ = tx.send(TimeBatch {
+            time: batch_time,
+            changes: batch,
+        });
     }
     Ok(())
 }
@@ -376,10 +380,19 @@ fn compare_signal_channels<W: Write>(
                         matched_at_current_time.insert(handle2);
                         let use_real_epsilon =
                             handles_are_real(hier1, change1.handle, hier2, handle2);
-                        if !change1.value.approx_eq(&value2, real_epsilon, use_real_epsilon) {
+                        if !change1
+                            .value
+                            .approx_eq(&value2, real_epsilon, use_real_epsilon)
+                        {
                             has_differences = true;
-                            for name in format_handle_names(change1.handle, &hier1.signal_map, &hier1.names) {
-                                writeln!(writer, "{} {} {} != {}", t1, name, change1.value, value2)?;
+                            for name in
+                                format_handle_names(change1.handle, &hier1.signal_map, &hier1.names)
+                            {
+                                writeln!(
+                                    writer,
+                                    "{} {} {} != {}",
+                                    t1, name, change1.value, value2
+                                )?;
                             }
                         }
                     } else {
@@ -389,7 +402,9 @@ fn compare_signal_channels<W: Write>(
                         } else {
                             "(missing time in file2)"
                         };
-                        for name in format_handle_names(change1.handle, &hier1.signal_map, &hier1.names) {
+                        for name in
+                            format_handle_names(change1.handle, &hier1.signal_map, &hier1.names)
+                        {
                             writeln!(writer, "{} {} {} {}", t1, name, change1.value, msg)?;
                         }
                     }
@@ -465,7 +480,10 @@ fn send_wave_changes(
     match reader {
         WaveReader::Fst(fst_reader) => {
             let include = include.map(|handles| {
-                handles.into_iter().map(FstSignalHandle::from_index).collect()
+                handles
+                    .into_iter()
+                    .map(FstSignalHandle::from_index)
+                    .collect()
             });
             let filter = FstFilter {
                 start,
@@ -486,7 +504,10 @@ fn send_wave_changes(
                         break;
                     }
                 }
-                if include.as_ref().is_some_and(|handles| !handles.contains(&handle)) {
+                if include
+                    .as_ref()
+                    .is_some_and(|handles| !handles.contains(&handle))
+                {
                     continue;
                 }
                 if !batch.is_empty() && (time != batch_time || batch.len() >= BATCH_SIZE) {
@@ -499,7 +520,10 @@ fn send_wave_changes(
                 });
             }
             if !batch.is_empty() {
-                let _ = tx.send(TimeBatch { time: batch_time, changes: batch });
+                let _ = tx.send(TimeBatch {
+                    time: batch_time,
+                    changes: batch,
+                });
             }
         }
     }
@@ -580,35 +604,49 @@ fn send_merged_wave_changes(
 /// Compare metadata and attributes for signals that share the same name across two files.
 /// Returns a list of human-readable difference strings.
 /// Direction is only compared if both sides have an explicit (non-implicit) direction.
-pub fn compare_signal_meta(
-    hier1: &WaveHierarchy,
-    hier2: &WaveHierarchy,
-) -> Vec<String> {
+pub fn compare_signal_meta(hier1: &WaveHierarchy, hier2: &WaveHierarchy) -> Vec<String> {
     let mut diffs = Vec::new();
 
     // Build name -> VarEntry lookup for both maps
     let entries1: HashMap<String, &crate::VarEntry> = hier1
         .signal_map
         .values()
-        .flat_map(|info| info.vars.iter().map(|v| (hier1.names.format_path(v.name), v)))
+        .flat_map(|info| {
+            info.vars
+                .iter()
+                .map(|v| (hier1.names.format_path(v.name), v))
+        })
         .collect();
     let entries2: HashMap<String, &crate::VarEntry> = hier2
         .signal_map
         .values()
-        .flat_map(|info| info.vars.iter().map(|v| (hier2.names.format_path(v.name), v)))
+        .flat_map(|info| {
+            info.vars
+                .iter()
+                .map(|v| (hier2.names.format_path(v.name), v))
+        })
         .collect();
 
-    let mut common: Vec<&String> = entries1.keys().filter(|n| entries2.contains_key(*n)).collect();
+    let mut common: Vec<&String> = entries1
+        .keys()
+        .filter(|n| entries2.contains_key(*n))
+        .collect();
     common.sort();
 
     for name in common {
         let v1 = entries1[name];
         let v2 = entries2[name];
         if v1.meta.var_type != v2.meta.var_type {
-            diffs.push(format!("{}: type {} != {}", name, v1.meta.var_type, v2.meta.var_type));
+            diffs.push(format!(
+                "{}: type {} != {}",
+                name, v1.meta.var_type, v2.meta.var_type
+            ));
         }
         if v1.meta.size != v2.meta.size {
-            diffs.push(format!("{}: size {} != {}", name, v1.meta.size, v2.meta.size));
+            diffs.push(format!(
+                "{}: size {} != {}",
+                name, v1.meta.size, v2.meta.size
+            ));
         }
         if v1.meta.direction != crate::IMPLICIT_DIRECTION
             && v2.meta.direction != crate::IMPLICIT_DIRECTION
@@ -620,8 +658,16 @@ pub fn compare_signal_meta(
             ));
         }
         if v1.attrs != v2.attrs {
-            let a1 = if v1.attrs.is_empty() { "(none)".to_string() } else { v1.attrs.join("; ") };
-            let a2 = if v2.attrs.is_empty() { "(none)".to_string() } else { v2.attrs.join("; ") };
+            let a1 = if v1.attrs.is_empty() {
+                "(none)".to_string()
+            } else {
+                v1.attrs.join("; ")
+            };
+            let a2 = if v2.attrs.is_empty() {
+                "(none)".to_string()
+            } else {
+                v2.attrs.join("; ")
+            };
             diffs.push(format!("{}: attrs [{}] != [{}]", name, a1, a2));
         }
     }
@@ -816,7 +862,9 @@ mod tests {
             let source_signal_count = reader_signal_count(&reader);
 
             assert_eq!(source_signal_count, hierarchy.signal_map.len(), "{path}");
-            assert!(reader_include_sets(&hierarchy.signal_map, &[0], source_signal_count).is_none());
+            assert!(
+                reader_include_sets(&hierarchy.signal_map, &[0], source_signal_count).is_none()
+            );
         }
 
         let paths = [
@@ -828,6 +876,8 @@ mod tests {
         let source_signal_count = readers.iter().map(reader_signal_count).sum();
 
         assert_eq!(source_signal_count, hierarchy.signal_map.len());
-        assert!(reader_include_sets(&hierarchy.signal_map, &offsets, source_signal_count).is_none());
+        assert!(
+            reader_include_sets(&hierarchy.signal_map, &offsets, source_signal_count).is_none()
+        );
     }
 }

@@ -89,9 +89,12 @@ fn write_signals<R: BufRead + Seek, W: Write>(
                     if options.sort {
                         if let Some(prev_time) = current_time {
                             if prev_time != time {
-                                if let Err(e) =
-                                    flush_signal_batch(writer, prev_time, &mut batch, options.time_pound)
-                                {
+                                if let Err(e) = flush_signal_batch(
+                                    writer,
+                                    prev_time,
+                                    &mut batch,
+                                    options.time_pound,
+                                ) {
                                     write_error = Some(e);
                                     return;
                                 }
@@ -193,9 +196,9 @@ fn send_cat_changes(
                     }
                 }
                 let value_str = match value {
-                    FstSignalValue::String(s) => {
-                        std::str::from_utf8(s).unwrap_or("<invalid utf8>").to_string()
-                    }
+                    FstSignalValue::String(s) => std::str::from_utf8(s)
+                        .unwrap_or("<invalid utf8>")
+                        .to_string(),
                     FstSignalValue::Real(r) => r.to_string(),
                 };
                 let _ = tx.send(CatChange {
@@ -268,32 +271,36 @@ pub fn write_signals_wave_multi<W: Write>(
     let mut current_time: Option<u64> = None;
     let mut batch: Vec<(String, String)> = Vec::new();
 
-    let merge_result = crate::kway_merge_channels(&rxs, |c| c.time, |change| {
-        if options.sort {
-            if let Some(prev_time) = current_time {
-                if prev_time != change.time {
-                    flush_signal_batch(writer, prev_time, &mut batch, options.time_pound)?;
+    let merge_result = crate::kway_merge_channels(
+        &rxs,
+        |c| c.time,
+        |change| {
+            if options.sort {
+                if let Some(prev_time) = current_time {
+                    if prev_time != change.time {
+                        flush_signal_batch(writer, prev_time, &mut batch, options.time_pound)?;
+                    }
+                }
+                current_time = Some(change.time);
+            }
+            if let Some(names) = handle_to_names.get(&change.handle) {
+                for name in names {
+                    if options.sort {
+                        batch.push((name.clone(), change.value.clone()));
+                    } else {
+                        write_signal_line(
+                            writer,
+                            change.time,
+                            name,
+                            &change.value,
+                            options.time_pound,
+                        )?;
+                    }
                 }
             }
-            current_time = Some(change.time);
-        }
-        if let Some(names) = handle_to_names.get(&change.handle) {
-            for name in names {
-                if options.sort {
-                    batch.push((name.clone(), change.value.clone()));
-                } else {
-                    write_signal_line(
-                        writer,
-                        change.time,
-                        name,
-                        &change.value,
-                        options.time_pound,
-                    )?;
-                }
-            }
-        }
-        Ok(())
-    });
+            Ok(())
+        },
+    );
 
     if merge_result.is_err() {
         drop(rxs);

@@ -6,11 +6,11 @@
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 
+use std::path::Path;
 use wavetools::{
     names_only, open_wave_file, open_wave_file_with_format, write_names, write_signals_wave,
     NameOptions, SignalOutputOptions, WaveFormat,
 };
-use std::path::Path;
 
 fn read_names_with_options(path: &str, name_options: &NameOptions) -> String {
     let (_, hier) =
@@ -50,7 +50,10 @@ fn read_signals_with_options(
 
 #[test]
 fn test_signals_start_end_fst() {
-    let options = SignalOutputOptions { sort: true, time_pound: false };
+    let options = SignalOutputOptions {
+        sort: true,
+        time_pound: false,
+    };
     let output = read_signals_with_options("tests/data/counter.fst", 10, Some(30), &options);
     let expected = "\
 10 t.clk 1
@@ -68,7 +71,10 @@ fn test_signals_start_end_fst() {
 
 #[test]
 fn test_signals_start_end_vcd() {
-    let options = SignalOutputOptions { sort: true, time_pound: false };
+    let options = SignalOutputOptions {
+        sort: true,
+        time_pound: false,
+    };
     let output = read_signals_with_options("tests/data/counter.vcd", 10, Some(30), &options);
     let expected = "\
 10 t.clk 1
@@ -86,7 +92,10 @@ fn test_signals_start_end_vcd() {
 
 #[test]
 fn test_signals_start_only() {
-    let options = SignalOutputOptions { sort: true, time_pound: false };
+    let options = SignalOutputOptions {
+        sort: true,
+        time_pound: false,
+    };
     let output = read_signals_with_options("tests/data/counter.fst", 40, None, &options);
     let expected = "\
 40 t.clk 0
@@ -97,7 +106,10 @@ fn test_signals_start_only() {
 
 #[test]
 fn test_signals_end_only() {
-    let options = SignalOutputOptions { sort: true, time_pound: false };
+    let options = SignalOutputOptions {
+        sort: true,
+        time_pound: false,
+    };
     let output = read_signals_with_options("tests/data/counter.fst", 0, Some(10), &options);
     let expected = "\
 0 t.clk 0
@@ -114,16 +126,25 @@ fn test_signals_end_only() {
 
 #[test]
 fn test_signals_start_beyond_data() {
-    let options = SignalOutputOptions { sort: true, time_pound: false };
+    let options = SignalOutputOptions {
+        sort: true,
+        time_pound: false,
+    };
     let output = read_signals_with_options("tests/data/counter.fst", 1000, None, &options);
-    assert!(output.is_empty(), "No output expected when start is beyond all data");
+    assert!(
+        output.is_empty(),
+        "No output expected when start is beyond all data"
+    );
 }
 
 // -- Output option tests -----------------------------------------------------
 
 #[test]
 fn test_signals_time_pound() {
-    let options = SignalOutputOptions { sort: true, time_pound: true };
+    let options = SignalOutputOptions {
+        sort: true,
+        time_pound: true,
+    };
     let output = read_signals_with_options("tests/data/counter.fst", 0, Some(10), &options);
     let expected = "\
 #0 t.clk 0
@@ -140,7 +161,10 @@ fn test_signals_time_pound() {
 
 #[test]
 fn test_signals_time_pound_vcd() {
-    let options = SignalOutputOptions { sort: true, time_pound: true };
+    let options = SignalOutputOptions {
+        sort: true,
+        time_pound: true,
+    };
     let output = read_signals_with_options("tests/data/counter.vcd", 0, Some(10), &options);
     let expected = "\
 #0 t.clk 0
@@ -170,7 +194,9 @@ t.dat [3:0]
 
 #[test]
 fn test_names_with_range_no_space() {
-    let options = NameOptions { no_range_space: true };
+    let options = NameOptions {
+        no_range_space: true,
+    };
     let output = read_names_with_options("tests/data/range.vcd", &options);
     let expected = "\
 t.\\a.b [3:0]
@@ -190,7 +216,10 @@ fn test_format_forcing_fst() {
         &name_options,
         Some(WaveFormat::Fst),
     );
-    assert!(result.is_ok(), "Should open FST file with forced FST format");
+    assert!(
+        result.is_ok(),
+        "Should open FST file with forced FST format"
+    );
 }
 
 #[test]
@@ -201,7 +230,10 @@ fn test_format_forcing_vcd() {
         &name_options,
         Some(WaveFormat::Vcd),
     );
-    assert!(result.is_ok(), "Should open VCD file with forced VCD format");
+    assert!(
+        result.is_ok(),
+        "Should open VCD file with forced VCD format"
+    );
 }
 
 #[test]

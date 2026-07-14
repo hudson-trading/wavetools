@@ -16,6 +16,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Format
+        run: scripts/rustfmt-non-vendored --check
+
       - name: Build
         run: cargo build --release
 

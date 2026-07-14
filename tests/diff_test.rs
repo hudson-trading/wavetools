@@ -6,14 +6,16 @@
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 
-use wavetools::{compare_signal_meta, compare_signal_names, diff_waves, open_and_read_waves, DiffOptions, NameOptions};
+use wavetools::{
+    compare_signal_meta, compare_signal_names, diff_waves, open_and_read_waves, DiffOptions,
+    NameOptions,
+};
 
 // Helper to check signal name differences
 fn check_signal_names(file1: &str, file2: &str) -> (bool, String) {
     let name_options = NameOptions::default();
     let (_reader1, hier1, _reader2, hier2) =
-        open_and_read_waves(file1, file2, &name_options)
-            .expect("Failed to open wave files");
+        open_and_read_waves(file1, file2, &name_options).expect("Failed to open wave files");
 
     let (only_in_1, only_in_2) = compare_signal_names(&hier1, &hier2);
 
@@ -32,10 +34,7 @@ fn check_signal_names(file1: &str, file2: &str) -> (bool, String) {
 
 #[test]
 fn test_diff_identical_files() {
-    let (has_diff, output) = run_wave_diff_test(
-        "tests/data/counter.fst",
-        "tests/data/counter.fst",
-    );
+    let (has_diff, output) = run_wave_diff_test("tests/data/counter.fst", "tests/data/counter.fst");
     assert!(!has_diff, "Identical files should have no differences");
     assert_eq!(output.len(), 0, "No output expected for identical files");
 }
@@ -46,7 +45,10 @@ fn test_diff_end_time() {
         "tests/data/counter.fst",
         "tests/data/counter.end_time.diff.fst",
     );
-    assert!(has_diff, "counter.end_time.diff.fst should differ from counter.fst");
+    assert!(
+        has_diff,
+        "counter.end_time.diff.fst should differ from counter.fst"
+    );
 
     let expected = "\
 50 t.clk 1 (missing time in file2)
@@ -62,7 +64,11 @@ fn test_change_reorder_no_diff() {
         "tests/data/counter.fst",
         "tests/data/counter.change_reorder.no_diff.fst",
     );
-    assert!(!has_diff, "counter.change_reorder.no_diff.fst should not differ. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "counter.change_reorder.no_diff.fst should not differ. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -71,7 +77,11 @@ fn test_identifier_no_diff() {
         "tests/data/counter.fst",
         "tests/data/counter.identifier.no_diff.fst",
     );
-    assert!(!has_diff, "counter.identifier.no_diff.fst should not differ. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "counter.identifier.no_diff.fst should not differ. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -80,7 +90,11 @@ fn test_scope_move_no_diff() {
         "tests/data/counter.fst",
         "tests/data/counter.scope_move.no_diff.fst",
     );
-    assert!(!has_diff, "counter.scope_move.no_diff.fst should not differ. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "counter.scope_move.no_diff.fst should not differ. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -89,7 +103,11 @@ fn test_time_no_diff() {
         "tests/data/counter.fst",
         "tests/data/counter.time.no_diff.fst",
     );
-    assert!(!has_diff, "counter.time.no_diff.fst should not differ. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "counter.time.no_diff.fst should not differ. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -98,7 +116,11 @@ fn test_var_reorder_no_diff() {
         "tests/data/counter.fst",
         "tests/data/counter.var_reorder.no_diff.fst",
     );
-    assert!(!has_diff, "counter.var_reorder.no_diff.fst should not differ. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "counter.var_reorder.no_diff.fst should not differ. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -107,7 +129,11 @@ fn test_shared_handle_no_diff() {
         "tests/data/counter.fst",
         "tests/data/counter.shared_handle.no_diff.fst",
     );
-    assert!(!has_diff, "counter.shared_handle.no_diff.fst should not differ. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "counter.shared_handle.no_diff.fst should not differ. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -116,7 +142,11 @@ fn test_shared_handle_reverse_no_diff() {
         "tests/data/counter.shared_handle.no_diff.fst",
         "tests/data/counter.fst",
     );
-    assert!(!has_diff, "counter.fst should not differ when compared in reverse. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "counter.fst should not differ when compared in reverse. Output:\n{}",
+        output
+    );
 }
 
 // Tests for files that SHOULD differ from counter.fst
@@ -127,7 +157,10 @@ fn test_edge_time_diff() {
         "tests/data/counter.fst",
         "tests/data/counter.edge_time.diff.fst",
     );
-    assert!(has_diff, "counter.edge_time.diff.fst should differ from counter.fst");
+    assert!(
+        has_diff,
+        "counter.edge_time.diff.fst should differ from counter.fst"
+    );
 
     // The only difference should be: time 20 in FST1 vs time 21 in FST2
     let expected = "\
@@ -150,7 +183,10 @@ fn test_buffered_file2_only_diffs_are_sorted() {
 10 t.b 1 (only in file2)
 10 t.c 1 (only in file2)
 ";
-    assert_eq!(output, expected, "Expected deterministic file2-only diff output");
+    assert_eq!(
+        output, expected,
+        "Expected deterministic file2-only diff output"
+    );
 }
 
 #[test]
@@ -159,7 +195,10 @@ fn test_new_sig_diff() {
         "tests/data/counter.fst",
         "tests/data/counter.new_sig.diff.fst",
     );
-    assert!(has_name_diff, "counter.new_sig.diff.fst should have different signal names");
+    assert!(
+        has_name_diff,
+        "counter.new_sig.diff.fst should have different signal names"
+    );
 
     let expected = "\
 Only in tests/data/counter.new_sig.diff.fst: {\"t.the_sub.new_sig\"}
@@ -173,7 +212,10 @@ fn test_sig_name_diff() {
         "tests/data/counter.fst",
         "tests/data/counter.sig_name.diff.fst",
     );
-    assert!(has_name_diff, "counter.sig_name.diff.fst should have different signal names");
+    assert!(
+        has_name_diff,
+        "counter.sig_name.diff.fst should have different signal names"
+    );
 
     let expected = "\
 Only in tests/data/counter.fst: {\"t.the_sub.cyc_plus_one\"}
@@ -188,7 +230,10 @@ fn test_value_diff() {
         "tests/data/counter.fst",
         "tests/data/counter.value.diff.fst",
     );
-    assert!(has_diff, "counter.value.diff.fst should differ from counter.fst");
+    assert!(
+        has_diff,
+        "counter.value.diff.fst should differ from counter.fst"
+    );
 
     let expected = "\
 10 t.the_sub.cyc_plus_one 00000000000000000000000000000010 != 00000000000000000000000000000100
@@ -201,20 +246,16 @@ fn test_value_diff() {
 fn run_wave_diff_test(file1: &str, file2: &str) -> (bool, String) {
     let name_options = NameOptions::default();
     let (reader1, hier1, reader2, hier2) =
-        open_and_read_waves(file1, file2, &name_options)
-            .expect("Failed to open wave files");
+        open_and_read_waves(file1, file2, &name_options).expect("Failed to open wave files");
 
     let mut output = Vec::new();
-    let options = DiffOptions { start: 0, end: None, real_epsilon: None };
-    let has_differences = diff_waves(
-        &mut output,
-        reader1,
-        hier1,
-        reader2,
-        hier2,
-        &options,
-    )
-    .expect("Failed to diff files");
+    let options = DiffOptions {
+        start: 0,
+        end: None,
+        real_epsilon: None,
+    };
+    let has_differences = diff_waves(&mut output, reader1, hier1, reader2, hier2, &options)
+        .expect("Failed to diff files");
 
     let output_str = String::from_utf8(output).expect("Invalid UTF-8");
     (has_differences, output_str)
@@ -222,24 +263,29 @@ fn run_wave_diff_test(file1: &str, file2: &str) -> (bool, String) {
 
 #[test]
 fn test_diff_vcd_identical() {
-    let (has_diff, output) =
-        run_wave_diff_test("tests/data/counter.vcd", "tests/data/counter.vcd");
+    let (has_diff, output) = run_wave_diff_test("tests/data/counter.vcd", "tests/data/counter.vcd");
     assert!(!has_diff, "Identical VCD files should have no differences");
     assert_eq!(output.len(), 0);
 }
 
 #[test]
 fn test_diff_cross_format_fst_vcd() {
-    let (has_diff, output) =
-        run_wave_diff_test("tests/data/counter.fst", "tests/data/counter.vcd");
-    assert!(!has_diff, "FST and equivalent VCD should have no differences. Output:\n{}", output);
+    let (has_diff, output) = run_wave_diff_test("tests/data/counter.fst", "tests/data/counter.vcd");
+    assert!(
+        !has_diff,
+        "FST and equivalent VCD should have no differences. Output:\n{}",
+        output
+    );
 }
 
 #[test]
 fn test_diff_cross_format_vcd_fst() {
-    let (has_diff, output) =
-        run_wave_diff_test("tests/data/counter.vcd", "tests/data/counter.fst");
-    assert!(!has_diff, "VCD and equivalent FST should have no differences. Output:\n{}", output);
+    let (has_diff, output) = run_wave_diff_test("tests/data/counter.vcd", "tests/data/counter.fst");
+    assert!(
+        !has_diff,
+        "VCD and equivalent FST should have no differences. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -248,11 +294,17 @@ fn test_diff_vcd_value_diff() {
         "tests/data/counter.vcd",
         "tests/data/counter.value.diff.vcd",
     );
-    assert!(has_diff, "counter.value.diff.vcd should differ from counter.vcd");
+    assert!(
+        has_diff,
+        "counter.value.diff.vcd should differ from counter.vcd"
+    );
     let expected = "\
 10 t.the_sub.cyc_plus_one 00000000000000000000000000000010 != 00000000000000000000000000000100
 ";
-    assert_eq!(output, expected, "Expected exact diff output for VCD value diff");
+    assert_eq!(
+        output, expected,
+        "Expected exact diff output for VCD value diff"
+    );
 }
 
 #[test]
@@ -261,11 +313,17 @@ fn test_diff_vcd_end_time() {
         "tests/data/counter.vcd",
         "tests/data/counter.end_time.diff.vcd",
     );
-    assert!(has_diff, "counter.end_time.diff.vcd should differ from counter.vcd");
+    assert!(
+        has_diff,
+        "counter.end_time.diff.vcd should differ from counter.vcd"
+    );
     let expected = "\
 50 t.clk 1 (missing time in file2)
 ";
-    assert_eq!(output, expected, "Expected exact diff output for VCD end time diff");
+    assert_eq!(
+        output, expected,
+        "Expected exact diff output for VCD end time diff"
+    );
 }
 
 // -- Real epsilon tests -------------------------------------------------------
@@ -277,20 +335,16 @@ fn run_wave_diff_test_with_epsilon(
 ) -> (bool, String) {
     let name_options = NameOptions::default();
     let (reader1, hier1, reader2, hier2) =
-        open_and_read_waves(file1, file2, &name_options)
-            .expect("Failed to open wave files");
+        open_and_read_waves(file1, file2, &name_options).expect("Failed to open wave files");
 
     let mut output = Vec::new();
-    let options = DiffOptions { start: 0, end: None, real_epsilon };
-    let has_differences = diff_waves(
-        &mut output,
-        reader1,
-        hier1,
-        reader2,
-        hier2,
-        &options,
-    )
-    .expect("Failed to diff files");
+    let options = DiffOptions {
+        start: 0,
+        end: None,
+        real_epsilon,
+    };
+    let has_differences = diff_waves(&mut output, reader1, hier1, reader2, hier2, &options)
+        .expect("Failed to diff files");
 
     let output_str = String::from_utf8(output).expect("Invalid UTF-8");
     (has_differences, output_str)
@@ -303,7 +357,11 @@ fn test_diff_real_no_epsilon_reports_diff() {
         "tests/data/real_close.vcd",
         None,
     );
-    assert!(has_diff, "Without epsilon, close real values should differ. Output:\n{}", output);
+    assert!(
+        has_diff,
+        "Without epsilon, close real values should differ. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -313,7 +371,11 @@ fn test_diff_real_within_epsilon_no_diff() {
         "tests/data/real_close.vcd",
         Some(0.001),
     );
-    assert!(!has_diff, "Within epsilon, close real values should not differ. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "Within epsilon, close real values should not differ. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -323,7 +385,11 @@ fn test_diff_real_outside_epsilon_reports_diff() {
         "tests/data/real_far.vcd",
         Some(0.001),
     );
-    assert!(has_diff, "Outside epsilon, far real values should differ. Output:\n{}", output);
+    assert!(
+        has_diff,
+        "Outside epsilon, far real values should differ. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -333,7 +399,11 @@ fn test_diff_real_large_epsilon_no_diff() {
         "tests/data/real_far.vcd",
         Some(1.0),
     );
-    assert!(!has_diff, "With large epsilon, even far real values should not differ. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "With large epsilon, even far real values should not differ. Output:\n{}",
+        output
+    );
 }
 
 // -- VCD id code aliasing tests -----------------------------------------------
@@ -347,20 +417,24 @@ fn test_diff_vcd_aliased_idcodes_no_diff() {
     // idcode_a.vcd: signals a,b (code !) and c,d (code ") share ids across scopes
     // idcode_b.vcd: every signal gets a unique id (0-4)
     // Signal names and values are identical -- only the id codes differ.
-    let (has_diff, output) = run_wave_diff_test(
-        "tests/data/idcode_a.vcd",
-        "tests/data/idcode_b.vcd",
+    let (has_diff, output) =
+        run_wave_diff_test("tests/data/idcode_a.vcd", "tests/data/idcode_b.vcd");
+    assert!(
+        !has_diff,
+        "Files with aliased vs unique VCD id codes should not differ. Output:\n{}",
+        output
     );
-    assert!(!has_diff, "Files with aliased vs unique VCD id codes should not differ. Output:\n{}", output);
 }
 
 #[test]
 fn test_diff_vcd_aliased_idcodes_reverse_no_diff() {
-    let (has_diff, output) = run_wave_diff_test(
-        "tests/data/idcode_b.vcd",
-        "tests/data/idcode_a.vcd",
+    let (has_diff, output) =
+        run_wave_diff_test("tests/data/idcode_b.vcd", "tests/data/idcode_a.vcd");
+    assert!(
+        !has_diff,
+        "Reversed aliased vs unique VCD id codes should not differ. Output:\n{}",
+        output
     );
-    assert!(!has_diff, "Reversed aliased vs unique VCD id codes should not differ. Output:\n{}", output);
 }
 
 #[test]
@@ -374,7 +448,10 @@ fn test_diff_vcd_aliased_idcodes_reports_each_name_once() {
 0 m.s0.a 0 != 1
 0 m.s1.c 0 != 1
 ";
-    assert_eq!(output, expected, "Expected one diff per aliased signal name");
+    assert_eq!(
+        output, expected,
+        "Expected one diff per aliased signal name"
+    );
 }
 
 // -- Time range filtering tests -----------------------------------------------
@@ -387,20 +464,16 @@ fn run_wave_diff_test_with_range(
 ) -> (bool, String) {
     let name_options = NameOptions::default();
     let (reader1, hier1, reader2, hier2) =
-        open_and_read_waves(file1, file2, &name_options)
-            .expect("Failed to open wave files");
+        open_and_read_waves(file1, file2, &name_options).expect("Failed to open wave files");
 
     let mut output = Vec::new();
-    let options = DiffOptions { start, end, real_epsilon: None };
-    let has_differences = diff_waves(
-        &mut output,
-        reader1,
-        hier1,
-        reader2,
-        hier2,
-        &options,
-    )
-    .expect("Failed to diff files");
+    let options = DiffOptions {
+        start,
+        end,
+        real_epsilon: None,
+    };
+    let has_differences = diff_waves(&mut output, reader1, hier1, reader2, hier2, &options)
+        .expect("Failed to diff files");
 
     let output_str = String::from_utf8(output).expect("Invalid UTF-8");
     (has_differences, output_str)
@@ -415,7 +488,11 @@ fn test_diff_start_skips_early_difference() {
         20,
         None,
     );
-    assert!(!has_diff, "Starting at time 20 should skip the time-10 difference. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "Starting at time 20 should skip the time-10 difference. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -427,7 +504,11 @@ fn test_diff_end_skips_late_difference() {
         0,
         Some(40),
     );
-    assert!(!has_diff, "Ending at time 40 should skip the time-50 difference. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "Ending at time 40 should skip the time-50 difference. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -439,7 +520,11 @@ fn test_diff_start_and_end_skip_difference() {
         30,
         Some(50),
     );
-    assert!(!has_diff, "Range 30-50 should skip differences at times 20-21. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "Range 30-50 should skip differences at times 20-21. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -450,7 +535,11 @@ fn test_diff_start_beyond_all_data() {
         1000,
         None,
     );
-    assert!(!has_diff, "Starting beyond all data should show no differences. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "Starting beyond all data should show no differences. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -461,7 +550,11 @@ fn test_diff_vcd_start_skips_early_difference() {
         20,
         None,
     );
-    assert!(!has_diff, "VCD: starting at time 20 should skip the time-10 difference. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "VCD: starting at time 20 should skip the time-10 difference. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -472,7 +565,11 @@ fn test_diff_vcd_end_skips_late_difference() {
         0,
         Some(40),
     );
-    assert!(!has_diff, "VCD: ending at time 40 should skip the time-50 difference. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "VCD: ending at time 40 should skip the time-50 difference. Output:\n{}",
+        output
+    );
 }
 
 // -- Additional epsilon edge cases --------------------------------------------
@@ -485,7 +582,11 @@ fn test_diff_zero_epsilon() {
         "tests/data/real_close.vcd",
         Some(0.0),
     );
-    assert!(has_diff, "Zero epsilon should require exact match. Output:\n{}", output);
+    assert!(
+        has_diff,
+        "Zero epsilon should require exact match. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -497,7 +598,11 @@ fn test_diff_epsilon_wide_bitvector_no_false_positive() {
         "tests/data/wide_bits.vcd",
         Some(0.0000001),
     );
-    assert!(!has_diff, "Identical wide bit-vectors should not differ with epsilon. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "Identical wide bit-vectors should not differ with epsilon. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -507,12 +612,19 @@ fn test_diff_epsilon_does_not_mask_bitvector_difference() {
         "tests/data/counter.value.diff.vcd",
         Some(1000.0),
     );
-    assert!(has_diff, "Bit-vector differences should stay exact with epsilon. Output:\n{}", output);
+    assert!(
+        has_diff,
+        "Bit-vector differences should stay exact with epsilon. Output:\n{}",
+        output
+    );
 
     let expected = "\
 10 t.the_sub.cyc_plus_one 00000000000000000000000000000010 != 00000000000000000000000000000100
 ";
-    assert_eq!(output, expected, "Expected exact diff output for VCD value diff");
+    assert_eq!(
+        output, expected,
+        "Expected exact diff output for VCD value diff"
+    );
 }
 
 // -- Metadata comparison tests ------------------------------------------------
@@ -520,26 +632,29 @@ fn test_diff_epsilon_does_not_mask_bitvector_difference() {
 #[test]
 fn test_diff_type_mismatch() {
     let name_options = NameOptions::default();
-    let (_r1, hier1, _r2, hier2) =
-        open_and_read_waves(
-            "tests/data/type_mismatch.a.vcd",
-            "tests/data/type_mismatch.b.vcd",
-            &name_options,
-        )
-        .expect("Failed to open wave files");
+    let (_r1, hier1, _r2, hier2) = open_and_read_waves(
+        "tests/data/type_mismatch.a.vcd",
+        "tests/data/type_mismatch.b.vcd",
+        &name_options,
+    )
+    .expect("Failed to open wave files");
 
     let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(!diffs.is_empty(), "Should detect type mismatches");
 
     // clk: wire vs reg
     assert!(
-        diffs.iter().any(|d| d.contains("top.clk") && d.contains("wire") && d.contains("reg")),
+        diffs
+            .iter()
+            .any(|d| d.contains("top.clk") && d.contains("wire") && d.contains("reg")),
         "Should detect clk type mismatch: {:?}",
         diffs
     );
     // state: wire vs reg
     assert!(
-        diffs.iter().any(|d| d.contains("top.state") && d.contains("wire") && d.contains("reg")),
+        diffs
+            .iter()
+            .any(|d| d.contains("top.state") && d.contains("wire") && d.contains("reg")),
         "Should detect state type mismatch: {:?}",
         diffs
     );
@@ -548,19 +663,20 @@ fn test_diff_type_mismatch() {
 #[test]
 fn test_diff_size_mismatch() {
     let name_options = NameOptions::default();
-    let (_r1, hier1, _r2, hier2) =
-        open_and_read_waves(
-            "tests/data/type_mismatch.a.vcd",
-            "tests/data/type_mismatch.b.vcd",
-            &name_options,
-        )
-        .expect("Failed to open wave files");
+    let (_r1, hier1, _r2, hier2) = open_and_read_waves(
+        "tests/data/type_mismatch.a.vcd",
+        "tests/data/type_mismatch.b.vcd",
+        &name_options,
+    )
+    .expect("Failed to open wave files");
 
     let diffs = compare_signal_meta(&hier1, &hier2);
 
     // data: size 8 vs 16
     assert!(
-        diffs.iter().any(|d| d.contains("top.data") && d.contains("8") && d.contains("16")),
+        diffs
+            .iter()
+            .any(|d| d.contains("top.data") && d.contains("8") && d.contains("16")),
         "Should detect data size mismatch: {:?}",
         diffs
     );
@@ -569,16 +685,19 @@ fn test_diff_size_mismatch() {
 #[test]
 fn test_diff_identical_metadata() {
     let name_options = NameOptions::default();
-    let (_r1, hier1, _r2, hier2) =
-        open_and_read_waves(
-            "tests/data/type_mismatch.a.vcd",
-            "tests/data/type_mismatch.a.vcd",
-            &name_options,
-        )
-        .expect("Failed to open wave files");
+    let (_r1, hier1, _r2, hier2) = open_and_read_waves(
+        "tests/data/type_mismatch.a.vcd",
+        "tests/data/type_mismatch.a.vcd",
+        &name_options,
+    )
+    .expect("Failed to open wave files");
 
     let diffs = compare_signal_meta(&hier1, &hier2);
-    assert!(diffs.is_empty(), "Same file should have no metadata diffs: {:?}", diffs);
+    assert!(
+        diffs.is_empty(),
+        "Same file should have no metadata diffs: {:?}",
+        diffs
+    );
 }
 
 #[test]
@@ -587,13 +706,12 @@ fn test_diff_cross_format_metadata() {
     // original types like "reg"/"integer" while VCD might use "wire"). Direction
     // comparison should be skipped since VCD has no direction info ("implicit").
     let name_options = NameOptions::default();
-    let (_r1, hier1, _r2, hier2) =
-        open_and_read_waves(
-            "tests/data/counter.fst",
-            "tests/data/counter.vcd",
-            &name_options,
-        )
-        .expect("Failed to open wave files");
+    let (_r1, hier1, _r2, hier2) = open_and_read_waves(
+        "tests/data/counter.fst",
+        "tests/data/counter.vcd",
+        &name_options,
+    )
+    .expect("Failed to open wave files");
 
     let diffs = compare_signal_meta(&hier1, &hier2);
     // Direction diffs should NOT appear since VCD direction is "implicit"
@@ -612,13 +730,12 @@ fn test_diff_enum_attr_difference() {
     //   a: state has enum state_t (IDLE/ACTIVE/DONE)
     //   b: state has enum alt_state_t (OFF/ON/ERR)
     let name_options = NameOptions::default();
-    let (_r1, hier1, _r2, hier2) =
-        open_and_read_waves(
-            "tests/data/enum_attrs.a.vcd",
-            "tests/data/enum_attrs.b.vcd",
-            &name_options,
-        )
-        .expect("Failed to open wave files");
+    let (_r1, hier1, _r2, hier2) = open_and_read_waves(
+        "tests/data/enum_attrs.a.vcd",
+        "tests/data/enum_attrs.b.vcd",
+        &name_options,
+    )
+    .expect("Failed to open wave files");
 
     let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(
@@ -634,13 +751,12 @@ fn test_diff_misc_attr_difference() {
     //   a: data has source path /path/to/source.v
     //   b: data has source path /different/path.v
     let name_options = NameOptions::default();
-    let (_r1, hier1, _r2, hier2) =
-        open_and_read_waves(
-            "tests/data/enum_attrs.a.vcd",
-            "tests/data/enum_attrs.b.vcd",
-            &name_options,
-        )
-        .expect("Failed to open wave files");
+    let (_r1, hier1, _r2, hier2) = open_and_read_waves(
+        "tests/data/enum_attrs.a.vcd",
+        "tests/data/enum_attrs.b.vcd",
+        &name_options,
+    )
+    .expect("Failed to open wave files");
 
     let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(
@@ -655,13 +771,12 @@ fn test_diff_attr_present_vs_absent() {
     // a: state has enum attr, data has source path attr
     // missing: no attrs on any signal
     let name_options = NameOptions::default();
-    let (_r1, hier1, _r2, hier2) =
-        open_and_read_waves(
-            "tests/data/enum_attrs.a.vcd",
-            "tests/data/enum_attrs.missing.vcd",
-            &name_options,
-        )
-        .expect("Failed to open wave files");
+    let (_r1, hier1, _r2, hier2) = open_and_read_waves(
+        "tests/data/enum_attrs.a.vcd",
+        "tests/data/enum_attrs.missing.vcd",
+        &name_options,
+    )
+    .expect("Failed to open wave files");
 
     let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(
@@ -680,16 +795,19 @@ fn test_diff_attr_present_vs_absent() {
 fn test_diff_identical_attrs_no_diff() {
     // Same file compared to itself -- no attr differences
     let name_options = NameOptions::default();
-    let (_r1, hier1, _r2, hier2) =
-        open_and_read_waves(
-            "tests/data/enum_attrs.a.vcd",
-            "tests/data/enum_attrs.a.vcd",
-            &name_options,
-        )
-        .expect("Failed to open wave files");
+    let (_r1, hier1, _r2, hier2) = open_and_read_waves(
+        "tests/data/enum_attrs.a.vcd",
+        "tests/data/enum_attrs.a.vcd",
+        &name_options,
+    )
+    .expect("Failed to open wave files");
 
     let diffs = compare_signal_meta(&hier1, &hier2);
-    assert!(diffs.is_empty(), "Same file should have no diffs: {:?}", diffs);
+    assert!(
+        diffs.is_empty(),
+        "Same file should have no diffs: {:?}",
+        diffs
+    );
 }
 
 #[test]
@@ -697,13 +815,12 @@ fn test_diff_real_size_normalized_across_formats() {
     // FST stores real signal sizes in bytes (8), VCD in bits (64).
     // After normalization both should report 64 -- no size mismatch.
     let name_options = NameOptions::default();
-    let (_r1, hier1, _r2, hier2) =
-        open_and_read_waves(
-            "tests/data/real_base.fst",
-            "tests/data/real_base.vcd",
-            &name_options,
-        )
-        .expect("Failed to open wave files");
+    let (_r1, hier1, _r2, hier2) = open_and_read_waves(
+        "tests/data/real_base.fst",
+        "tests/data/real_base.vcd",
+        &name_options,
+    )
+    .expect("Failed to open wave files");
 
     let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(
@@ -721,14 +838,23 @@ use common::{run_wavecat_cli, run_wavediff_cli};
 #[test]
 fn test_cli_attr_diff_nonzero_exit() {
     // Different attrs, same values -- should exit 1
-    let output = run_wavediff_cli(&[
-        "tests/data/enum_attrs.a.vcd",
-        "tests/data/enum_attrs.b.vcd",
-    ]);
-    assert_eq!(output.status.code(), Some(1), "Attr diffs should cause exit 1");
+    let output = run_wavediff_cli(&["tests/data/enum_attrs.a.vcd", "tests/data/enum_attrs.b.vcd"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "Attr diffs should cause exit 1"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("top.state"), "stderr should mention top.state: {}", stderr);
-    assert!(stderr.contains("top.data"), "stderr should mention top.data: {}", stderr);
+    assert!(
+        stderr.contains("top.state"),
+        "stderr should mention top.state: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("top.data"),
+        "stderr should mention top.data: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -904,33 +1030,27 @@ fn test_non_qualified_duplicate_enums_no_conflict() {
 
 // -- --filter tests -----------------------------------------------------------
 
-fn run_wave_diff_test_with_filter(
-    file1: &str,
-    file2: &str,
-    filter: &[&str],
-) -> (bool, String) {
+fn run_wave_diff_test_with_filter(file1: &str, file2: &str, filter: &[&str]) -> (bool, String) {
     let name_options = NameOptions::default();
     let (reader1, mut hier1, reader2, mut hier2) =
         wavetools::open_and_read_waves(file1, file2, &name_options)
             .expect("Failed to open wave files");
 
     let filter_strings: Vec<String> = filter.iter().map(|&s| s.to_string()).collect();
-    let patterns = wavetools::parse_filter_patterns(&filter_strings)
-        .expect("Failed to parse filter patterns");
+    let patterns =
+        wavetools::parse_filter_patterns(&filter_strings).expect("Failed to parse filter patterns");
     wavetools::apply_filter(&mut hier1, &patterns);
     wavetools::apply_filter(&mut hier2, &patterns);
 
     let mut output = Vec::new();
-    let options = DiffOptions { start: 0, end: None, real_epsilon: None };
-    let has_differences = wavetools::diff_waves(
-        &mut output,
-        reader1,
-        hier1,
-        reader2,
-        hier2,
-        &options,
-    )
-    .expect("Failed to diff files");
+    let options = DiffOptions {
+        start: 0,
+        end: None,
+        real_epsilon: None,
+    };
+    let has_differences =
+        wavetools::diff_waves(&mut output, reader1, hier1, reader2, hier2, &options)
+            .expect("Failed to diff files");
 
     let output_str = String::from_utf8(output).expect("Invalid UTF-8");
     (has_differences, output_str)
@@ -945,7 +1065,11 @@ fn test_filter_excludes_differing_signal() {
         "tests/data/counter.value.diff.fst",
         &["*.clk"],
     );
-    assert!(!has_diff, "Filter excluding the differing signal should report no diff. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "Filter excluding the differing signal should report no diff. Output:\n{}",
+        output
+    );
     assert_eq!(output, "", "No diff output expected");
 }
 
@@ -957,11 +1081,17 @@ fn test_filter_includes_differing_signal() {
         "tests/data/counter.value.diff.fst",
         &["*.cyc_plus_one"],
     );
-    assert!(has_diff, "Filter including the differing signal should report a diff");
+    assert!(
+        has_diff,
+        "Filter including the differing signal should report a diff"
+    );
     let expected = "\
 10 t.the_sub.cyc_plus_one 00000000000000000000000000000010 != 00000000000000000000000000000100
 ";
-    assert_eq!(output, expected, "Expected diff output for the targeted signal");
+    assert_eq!(
+        output, expected,
+        "Expected diff output for the targeted signal"
+    );
 }
 
 #[test]
@@ -973,7 +1103,11 @@ fn test_filter_space_separated_patterns() {
         "tests/data/counter.value.diff.fst",
         &["*.clk *.cyc"],
     );
-    assert!(!has_diff, "Two safe-signal globs should still report no diff. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "Two safe-signal globs should still report no diff. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -984,7 +1118,11 @@ fn test_filter_multiple_args_are_unioned() {
         "tests/data/counter.value.diff.fst",
         &["*.clk", "*.cyc"],
     );
-    assert!(!has_diff, "Unioned safe-signal filters should report no diff. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "Unioned safe-signal filters should report no diff. Output:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -996,7 +1134,11 @@ fn test_filter_matches_nothing_yields_no_diff() {
         "tests/data/counter.value.diff.fst",
         &["*.nonexistent"],
     );
-    assert!(!has_diff, "Filter matching nothing should not synthesize a diff. Output:\n{}", output);
+    assert!(
+        !has_diff,
+        "Filter matching nothing should not synthesize a diff. Output:\n{}",
+        output
+    );
     assert_eq!(output, "", "Empty filtered set should produce no output");
 }
 
@@ -1009,11 +1151,17 @@ fn test_filter_preserves_unrelated_diff() {
         "tests/data/counter.value.diff.fst",
         &["*.clk", "*.cyc_plus_one"],
     );
-    assert!(has_diff, "Filter including the differing signal should still diff");
+    assert!(
+        has_diff,
+        "Filter including the differing signal should still diff"
+    );
     let expected = "\
 10 t.the_sub.cyc_plus_one 00000000000000000000000000000010 != 00000000000000000000000000000100
 ";
-    assert_eq!(output, expected, "Only the targeted differing signal should be reported");
+    assert_eq!(
+        output, expected,
+        "Only the targeted differing signal should be reported"
+    );
 }
 
 // -- --filter CLI tests -------------------------------------------------------
@@ -1043,7 +1191,11 @@ fn test_cli_filter_short_flag_includes_diff_exits_one() {
         "tests/data/counter.fst",
         "tests/data/counter.value.diff.fst",
     ]);
-    assert_eq!(output.status.code(), Some(1), "Targeting the differing signal should exit 1");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "Targeting the differing signal should exit 1"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("cyc_plus_one"),
@@ -1075,14 +1227,17 @@ fn filter_name_mismatch(
     file1: &str,
     file2: &str,
     filter: &[&str],
-) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
     let name_options = NameOptions::default();
     let (_r1, mut hier1, _r2, mut hier2) =
         wavetools::open_and_read_waves(file1, file2, &name_options)
             .expect("Failed to open wave files");
     let filter_strings: Vec<String> = filter.iter().map(|&s| s.to_string()).collect();
-    let patterns = wavetools::parse_filter_patterns(&filter_strings)
-        .expect("Failed to parse filter patterns");
+    let patterns =
+        wavetools::parse_filter_patterns(&filter_strings).expect("Failed to parse filter patterns");
     wavetools::apply_filter(&mut hier1, &patterns);
     wavetools::apply_filter(&mut hier2, &patterns);
     compare_signal_names(&hier1, &hier2)
@@ -1098,10 +1253,16 @@ fn test_filter_matches_only_file1_reports_name_mismatch() {
         "tests/data/counter.sig_name.diff.fst",
         &["*.cyc_plus_one"],
     );
-    assert!(only_in_1.contains("t.the_sub.cyc_plus_one"),
-        "Should report cyc_plus_one only in file1, got: {:?}", only_in_1);
-    assert!(only_in_2.is_empty(),
-        "Nothing should be only in file2, got: {:?}", only_in_2);
+    assert!(
+        only_in_1.contains("t.the_sub.cyc_plus_one"),
+        "Should report cyc_plus_one only in file1, got: {:?}",
+        only_in_1
+    );
+    assert!(
+        only_in_2.is_empty(),
+        "Nothing should be only in file2, got: {:?}",
+        only_in_2
+    );
 }
 
 #[test]
@@ -1113,10 +1274,16 @@ fn test_filter_matches_only_file2_reports_name_mismatch() {
         "tests/data/counter.sig_name.diff.fst",
         &["*.blargh"],
     );
-    assert!(only_in_2.contains("t.the_sub.blargh"),
-        "Should report blargh only in file2, got: {:?}", only_in_2);
-    assert!(only_in_1.is_empty(),
-        "Nothing should be only in file1, got: {:?}", only_in_1);
+    assert!(
+        only_in_2.contains("t.the_sub.blargh"),
+        "Should report blargh only in file2, got: {:?}",
+        only_in_2
+    );
+    assert!(
+        only_in_1.is_empty(),
+        "Nothing should be only in file1, got: {:?}",
+        only_in_1
+    );
 }
 
 #[test]
@@ -1127,12 +1294,18 @@ fn test_cli_filter_matches_only_file1_exits_one() {
         "tests/data/counter.fst",
         "tests/data/counter.sig_name.diff.fst",
     ]);
-    assert_eq!(output.status.code(), Some(1),
+    assert_eq!(
+        output.status.code(),
+        Some(1),
         "Filter matching only file1 should exit 1. stderr: {}",
-        String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("t.the_sub.cyc_plus_one"),
-        "stderr should name the asymmetric signal: {}", stderr);
+    assert!(
+        stderr.contains("t.the_sub.cyc_plus_one"),
+        "stderr should name the asymmetric signal: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -1143,12 +1316,18 @@ fn test_cli_filter_matches_only_file2_exits_one() {
         "tests/data/counter.fst",
         "tests/data/counter.sig_name.diff.fst",
     ]);
-    assert_eq!(output.status.code(), Some(1),
+    assert_eq!(
+        output.status.code(),
+        Some(1),
         "Filter matching only file2 should exit 1. stderr: {}",
-        String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("t.the_sub.blargh"),
-        "stderr should name the asymmetric signal: {}", stderr);
+    assert!(
+        stderr.contains("t.the_sub.blargh"),
+        "stderr should name the asymmetric signal: {}",
+        stderr
+    );
 }
 
 #[test]

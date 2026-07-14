@@ -8,9 +8,9 @@
 
 use std::path::Path;
 use wavetools::{
-    merge_signal_maps, names_only, open_wave_file, open_wave_files, write_signals_wave_multi,
-    diff_wave_sets, compare_signal_names, compare_signal_meta,
-    DiffOptions, NameOptions, SignalOutputOptions, WaveHierarchy, WaveSets,
+    compare_signal_meta, compare_signal_names, diff_wave_sets, merge_signal_maps, names_only,
+    open_wave_file, open_wave_files, write_signals_wave_multi, DiffOptions, NameOptions,
+    SignalOutputOptions, WaveHierarchy, WaveSets,
 };
 
 fn sorted_names(hier: &WaveHierarchy) -> Vec<String> {
@@ -25,22 +25,33 @@ fn sorted_names(hier: &WaveHierarchy) -> Vec<String> {
 
 #[test]
 fn test_merge_disjoint_signals() {
-    let (_, hier_clk) = open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
-    let (_, hier_counter) = open_wave_file(Path::new("tests/data/set_counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_clk) =
+        open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_counter) = open_wave_file(
+        Path::new("tests/data/set_counter.vcd"),
+        &NameOptions::default(),
+    )
+    .unwrap();
 
     let (merged_map, merged_tree, offsets) = merge_signal_maps(&[
         (&hier_clk.signal_map, &hier_clk.names, "set_clk.vcd"),
-        (&hier_counter.signal_map, &hier_counter.names, "set_counter.vcd"),
-    ]).unwrap();
+        (
+            &hier_counter.signal_map,
+            &hier_counter.names,
+            "set_counter.vcd",
+        ),
+    ])
+    .unwrap();
 
-    let merged = WaveHierarchy { signal_map: merged_map, names: merged_tree };
+    let merged = WaveHierarchy {
+        signal_map: merged_map,
+        names: merged_tree,
+    };
     let names = sorted_names(&merged);
-    assert_eq!(names, vec![
-        "t.clk",
-        "t.cyc",
-        "t.the_sub.cyc",
-        "t.the_sub.cyc_plus_one",
-    ]);
+    assert_eq!(
+        names,
+        vec!["t.clk", "t.cyc", "t.the_sub.cyc", "t.the_sub.cyc_plus_one",]
+    );
     assert_eq!(offsets.len(), 2);
     assert_eq!(offsets[0], 0);
     assert!(offsets[1] > 0);
@@ -48,38 +59,67 @@ fn test_merge_disjoint_signals() {
 
 #[test]
 fn test_merge_duplicate_signal_error() {
-    let (_, hier_clk) = open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
-    let (_, hier_overlap) = open_wave_file(Path::new("tests/data/set_overlap.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_clk) =
+        open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_overlap) = open_wave_file(
+        Path::new("tests/data/set_overlap.vcd"),
+        &NameOptions::default(),
+    )
+    .unwrap();
 
     let result = merge_signal_maps(&[
         (&hier_clk.signal_map, &hier_clk.names, "set_clk.vcd"),
-        (&hier_overlap.signal_map, &hier_overlap.names, "set_overlap.vcd"),
+        (
+            &hier_overlap.signal_map,
+            &hier_overlap.names,
+            "set_overlap.vcd",
+        ),
     ]);
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.contains("duplicate signal"), "Expected duplicate signal error, got: {}", err);
-    assert!(err.contains("t.clk"), "Expected error to mention 't.clk', got: {}", err);
+    assert!(
+        err.contains("duplicate signal"),
+        "Expected duplicate signal error, got: {}",
+        err
+    );
+    assert!(
+        err.contains("t.clk"),
+        "Expected error to mention 't.clk', got: {}",
+        err
+    );
 }
 
 #[test]
 fn test_merge_single_file() {
-    let (_, hier_single) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_single) =
+        open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
 
-    let (merged_map, merged_tree, offsets) = merge_signal_maps(&[
-        (&hier_single.signal_map, &hier_single.names, "counter.vcd"),
-    ]).unwrap();
+    let (merged_map, merged_tree, offsets) =
+        merge_signal_maps(&[(&hier_single.signal_map, &hier_single.names, "counter.vcd")]).unwrap();
 
-    let merged = WaveHierarchy { signal_map: merged_map, names: merged_tree };
+    let merged = WaveHierarchy {
+        signal_map: merged_map,
+        names: merged_tree,
+    };
     assert_eq!(offsets, vec![0]);
     assert_eq!(sorted_names(&merged), sorted_names(&hier_single));
 }
 
 #[test]
 fn test_merge_handle_offsets() {
-    let (_, hier_clk) = open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
-    let (_, hier_counter) = open_wave_file(Path::new("tests/data/set_counter.vcd"), &NameOptions::default()).unwrap();
-    let (_, hier_overlap) = open_wave_file(Path::new("tests/data/set_counter_modified.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_clk) =
+        open_wave_file(Path::new("tests/data/set_clk.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier_counter) = open_wave_file(
+        Path::new("tests/data/set_counter.vcd"),
+        &NameOptions::default(),
+    )
+    .unwrap();
+    let (_, hier_overlap) = open_wave_file(
+        Path::new("tests/data/set_counter_modified.vcd"),
+        &NameOptions::default(),
+    )
+    .unwrap();
 
     // counter and counter_modified share signal names, so merge must fail
     let result = merge_signal_maps(&[
@@ -93,7 +133,8 @@ fn test_merge_handle_offsets() {
     let (_, _, offsets) = merge_signal_maps(&[
         (&hier_clk.signal_map, &hier_clk.names, "a"),
         (&hier_counter.signal_map, &hier_counter.names, "b"),
-    ]).unwrap();
+    ])
+    .unwrap();
     assert_eq!(offsets[0], 0);
     assert!(offsets[1] > 0, "second file should have non-zero offset");
 }
@@ -109,12 +150,10 @@ fn test_open_wave_files_disjoint() {
     let (readers, hier, offsets) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
     assert_eq!(readers.len(), 2);
     assert_eq!(offsets.len(), 2);
-    assert_eq!(sorted_names(&hier), vec![
-        "t.clk",
-        "t.cyc",
-        "t.the_sub.cyc",
-        "t.the_sub.cyc_plus_one",
-    ]);
+    assert_eq!(
+        sorted_names(&hier),
+        vec!["t.clk", "t.cyc", "t.the_sub.cyc", "t.the_sub.cyc_plus_one",]
+    );
 }
 
 #[test]
@@ -125,7 +164,11 @@ fn test_open_wave_files_conflict() {
     ];
     let result = open_wave_files(&paths, &NameOptions::default(), None);
     match result {
-        Err(e) => assert!(e.contains("duplicate signal"), "Expected duplicate signal error: {}", e),
+        Err(e) => assert!(
+            e.contains("duplicate signal"),
+            "Expected duplicate signal error: {}",
+            e
+        ),
         Ok(_) => panic!("Expected error for overlapping signals"),
     }
 }
@@ -141,7 +184,8 @@ fn test_cat_multi_names_match_single() {
     ];
     let (_, multi_hier, _) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
 
-    let (_, single_hier) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, single_hier) =
+        open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
 
     assert_eq!(sorted_names(&multi_hier), sorted_names(&single_hier));
 }
@@ -160,8 +204,16 @@ fn test_cat_multi_signals_sorted() {
         sort: true,
     };
     let mut multi_output = Vec::new();
-    write_signals_wave_multi(&mut multi_output, readers, &offsets, &names, 0, None, &options)
-        .unwrap();
+    write_signals_wave_multi(
+        &mut multi_output,
+        readers,
+        &offsets,
+        &names,
+        0,
+        None,
+        &options,
+    )
+    .unwrap();
 
     let (mut single_reader, single_hier) =
         open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
@@ -192,20 +244,38 @@ fn test_diff_set_vs_single_identical() {
         Path::new("tests/data/set_clk.vcd"),
         Path::new("tests/data/set_counter.vcd"),
     ];
-    let (readers1, hier1, offsets1) = open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
+    let (readers1, hier1, offsets1) =
+        open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
 
     let paths2: Vec<&Path> = vec![Path::new("tests/data/counter.vcd")];
-    let (readers2, hier2, offsets2) = open_wave_files(&paths2, &NameOptions::default(), None).unwrap();
+    let (readers2, hier2, offsets2) =
+        open_wave_files(&paths2, &NameOptions::default(), None).unwrap();
 
     let mut output = Vec::new();
-    let options = DiffOptions { start: 0, end: None, real_epsilon: None };
+    let options = DiffOptions {
+        start: 0,
+        end: None,
+        real_epsilon: None,
+    };
     let has_diff = diff_wave_sets(
         &mut output,
-        WaveSets { readers1, hier1, offsets1, readers2, hier2, offsets2 },
+        WaveSets {
+            readers1,
+            hier1,
+            offsets1,
+            readers2,
+            hier2,
+            offsets2,
+        },
         &options,
-    ).unwrap();
+    )
+    .unwrap();
 
-    assert!(!has_diff, "Expected no differences, got: {}", String::from_utf8_lossy(&output));
+    assert!(
+        !has_diff,
+        "Expected no differences, got: {}",
+        String::from_utf8_lossy(&output)
+    );
 }
 
 #[test]
@@ -215,22 +285,40 @@ fn test_diff_set_value_difference() {
         Path::new("tests/data/set_clk.vcd"),
         Path::new("tests/data/set_counter_modified.vcd"),
     ];
-    let (readers1, hier1, offsets1) = open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
+    let (readers1, hier1, offsets1) =
+        open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
 
     let paths2: Vec<&Path> = vec![Path::new("tests/data/counter.vcd")];
-    let (readers2, hier2, offsets2) = open_wave_files(&paths2, &NameOptions::default(), None).unwrap();
+    let (readers2, hier2, offsets2) =
+        open_wave_files(&paths2, &NameOptions::default(), None).unwrap();
 
     let mut output = Vec::new();
-    let options = DiffOptions { start: 0, end: None, real_epsilon: None };
+    let options = DiffOptions {
+        start: 0,
+        end: None,
+        real_epsilon: None,
+    };
     let has_diff = diff_wave_sets(
         &mut output,
-        WaveSets { readers1, hier1, offsets1, readers2, hier2, offsets2 },
+        WaveSets {
+            readers1,
+            hier1,
+            offsets1,
+            readers2,
+            hier2,
+            offsets2,
+        },
         &options,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert!(has_diff, "Expected differences");
     let output_str = String::from_utf8(output).unwrap();
-    assert!(output_str.contains("t.the_sub.cyc_plus_one"), "Expected cyc_plus_one in diff output: {}", output_str);
+    assert!(
+        output_str.contains("t.the_sub.cyc_plus_one"),
+        "Expected cyc_plus_one in diff output: {}",
+        output_str
+    );
 }
 
 #[test]
@@ -242,11 +330,20 @@ fn test_diff_set_signal_name_comparison() {
     ];
     let (_, hier1, _) = open_wave_files(&paths1, &NameOptions::default(), None).unwrap();
 
-    let (_, hier2) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier2) =
+        open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
 
     let (only_in_1, only_in_2) = compare_signal_names(&hier1, &hier2);
-    assert!(only_in_1.is_empty(), "Unexpected signals only in set: {:?}", only_in_1);
-    assert!(only_in_2.is_empty(), "Unexpected signals only in single: {:?}", only_in_2);
+    assert!(
+        only_in_1.is_empty(),
+        "Unexpected signals only in set: {:?}",
+        only_in_1
+    );
+    assert!(
+        only_in_2.is_empty(),
+        "Unexpected signals only in single: {:?}",
+        only_in_2
+    );
 }
 
 #[test]
@@ -257,7 +354,8 @@ fn test_diff_set_meta_comparison() {
         Path::new("tests/data/set_counter.vcd"),
     ];
     let (_, hier1, _) = open_wave_files(&paths, &NameOptions::default(), None).unwrap();
-    let (_, hier2) = open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
+    let (_, hier2) =
+        open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default()).unwrap();
 
     let diffs = compare_signal_meta(&hier1, &hier2);
     assert!(diffs.is_empty(), "Expected no meta diffs, got: {:?}", diffs);
@@ -271,19 +369,18 @@ use common::{run_wavecat_cli, run_wavediff_cli};
 #[test]
 fn test_cli_wavecat_multi_file_names() {
     let output = run_wavecat_cli(&[
-        "--names", "--sort",
+        "--names",
+        "--sort",
         "tests/data/set_clk.vcd",
         "tests/data/set_counter.vcd",
     ]);
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     let names: Vec<&str> = stdout.lines().collect();
-    assert_eq!(names, vec![
-        "t.clk",
-        "t.cyc",
-        "t.the_sub.cyc",
-        "t.the_sub.cyc_plus_one",
-    ]);
+    assert_eq!(
+        names,
+        vec!["t.clk", "t.cyc", "t.the_sub.cyc", "t.the_sub.cyc_plus_one",]
+    );
 }
 
 #[test]
@@ -295,13 +392,18 @@ fn test_cli_wavecat_multi_file_conflict() {
     ]);
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("duplicate signal"), "Expected duplicate signal error: {}", stderr);
+    assert!(
+        stderr.contains("duplicate signal"),
+        "Expected duplicate signal error: {}",
+        stderr
+    );
 }
 
 #[test]
 fn test_cli_wavecat_multi_file_attrs() {
     let output = run_wavecat_cli(&[
-        "--attrs", "--sort",
+        "--attrs",
+        "--sort",
         "tests/data/set_clk.vcd",
         "tests/data/set_counter.vcd",
     ]);
@@ -313,11 +415,7 @@ fn test_cli_wavecat_multi_file_attrs() {
 
 #[test]
 fn test_cli_wavecat_start_after_end_fails() {
-    let output = run_wavecat_cli(&[
-        "--start", "40",
-        "--end", "10",
-        "tests/data/counter.vcd",
-    ]);
+    let output = run_wavecat_cli(&["--start", "40", "--end", "10", "tests/data/counter.vcd"]);
     assert_eq!(output.status.code(), Some(1), "Expected exit 1");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
@@ -331,18 +429,24 @@ fn test_cli_wavecat_start_after_end_fails() {
 fn test_cli_wavediff_set_no_diff() {
     // {set_clk + set_counter} vs {counter} = identical, exit 0
     let output = run_wavediff_cli(&[
-        "--set1", "tests/data/set_counter.vcd",
+        "--set1",
+        "tests/data/set_counter.vcd",
         "tests/data/set_clk.vcd",
         "tests/data/counter.vcd",
     ]);
-    assert!(output.status.success(), "Expected exit 0, stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "Expected exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
 fn test_cli_wavediff_set_value_diff() {
     // {set_clk + set_counter_modified} vs {counter} = difference, exit 1
     let output = run_wavediff_cli(&[
-        "--set1", "tests/data/set_counter_modified.vcd",
+        "--set1",
+        "tests/data/set_counter_modified.vcd",
         "tests/data/set_clk.vcd",
         "tests/data/counter.vcd",
     ]);
@@ -360,63 +464,95 @@ fn test_cli_wavediff_name_mismatch_exits_difference() {
 
     assert_eq!(output.status.code(), Some(1), "Expected exit 1");
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("Signal name mismatch"), "Expected name mismatch: {}", stderr);
-    assert!(stderr.contains("t.the_sub.new_sig"), "Expected missing signal: {}", stderr);
-    assert!(!stderr.contains("Error:"), "Name mismatches should not use the error path: {}", stderr);
+    assert!(
+        stderr.contains("Signal name mismatch"),
+        "Expected name mismatch: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("t.the_sub.new_sig"),
+        "Expected missing signal: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("Error:"),
+        "Name mismatches should not use the error path: {}",
+        stderr
+    );
 }
 
 #[test]
 fn test_cli_wavediff_set_conflict() {
     // set_clk + set_overlap in set1 = duplicate signal, exit 2
     let output = run_wavediff_cli(&[
-        "--set1", "tests/data/set_overlap.vcd",
+        "--set1",
+        "tests/data/set_overlap.vcd",
         "tests/data/set_clk.vcd",
         "tests/data/counter.vcd",
     ]);
     assert_eq!(output.status.code(), Some(2), "Expected exit 2");
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("duplicate signal"), "Expected duplicate signal error: {}", stderr);
+    assert!(
+        stderr.contains("duplicate signal"),
+        "Expected duplicate signal error: {}",
+        stderr
+    );
 }
 
 #[test]
 fn test_cli_wavediff_no_sets_unchanged() {
     // Without --set1/--set2, existing behavior unchanged
-    let output = run_wavediff_cli(&[
-        "tests/data/counter.vcd",
-        "tests/data/counter.vcd",
-    ]);
-    assert!(output.status.success(), "Expected exit 0 for identical files");
+    let output = run_wavediff_cli(&["tests/data/counter.vcd", "tests/data/counter.vcd"]);
+    assert!(
+        output.status.success(),
+        "Expected exit 0 for identical files"
+    );
 }
 
 #[test]
 fn test_cli_wavediff_set2_only() {
     // Only --set2 with positional args
     let output = run_wavediff_cli(&[
-        "--set2", "tests/data/set_counter.vcd",
+        "--set2",
+        "tests/data/set_counter.vcd",
         "tests/data/counter.vcd",
         "tests/data/set_clk.vcd",
     ]);
-    assert!(output.status.success(), "Expected exit 0, stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "Expected exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
 fn test_cli_wavediff_sets_only_no_positional() {
     // Both --set1 and --set2, no positional args
     let output = run_wavediff_cli(&[
-        "--set1", "tests/data/set_clk.vcd",
-        "--set1", "tests/data/set_counter.vcd",
-        "--set2", "tests/data/counter.vcd",
+        "--set1",
+        "tests/data/set_clk.vcd",
+        "--set1",
+        "tests/data/set_counter.vcd",
+        "--set2",
+        "tests/data/counter.vcd",
     ]);
-    assert!(output.status.success(), "Expected exit 0, stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "Expected exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
 fn test_cli_wavediff_sets_only_value_diff() {
     // Both --set1 and --set2 with no positional args, difference detected
     let output = run_wavediff_cli(&[
-        "--set1", "tests/data/set_clk.vcd",
-        "--set1", "tests/data/set_counter_modified.vcd",
-        "--set2", "tests/data/counter.vcd",
+        "--set1",
+        "tests/data/set_clk.vcd",
+        "--set1",
+        "tests/data/set_counter_modified.vcd",
+        "--set2",
+        "tests/data/counter.vcd",
     ]);
     assert_eq!(output.status.code(), Some(1), "Expected exit 1");
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -428,10 +564,14 @@ fn test_cli_wavediff_set_filter_excludes_value_diff() {
     // The value difference lives in set_counter_modified.vcd. Filtering to the
     // disjoint clk reader should avoid streaming/reporting that difference.
     let output = run_wavediff_cli(&[
-        "--filter", "*.clk",
-        "--set1", "tests/data/set_clk.vcd",
-        "--set1", "tests/data/set_counter_modified.vcd",
-        "--set2", "tests/data/counter.vcd",
+        "--filter",
+        "*.clk",
+        "--set1",
+        "tests/data/set_clk.vcd",
+        "--set1",
+        "tests/data/set_counter_modified.vcd",
+        "--set2",
+        "tests/data/counter.vcd",
     ]);
     assert!(
         output.status.success(),
@@ -446,10 +586,14 @@ fn test_cli_wavediff_set_filter_includes_value_diff() {
     // Filtering to a signal in the second set1 reader exercises non-zero
     // handle offsets while preserving the expected value diff.
     let output = run_wavediff_cli(&[
-        "--filter", "*.cyc_plus_one",
-        "--set1", "tests/data/set_clk.vcd",
-        "--set1", "tests/data/set_counter_modified.vcd",
-        "--set2", "tests/data/counter.vcd",
+        "--filter",
+        "*.cyc_plus_one",
+        "--set1",
+        "tests/data/set_clk.vcd",
+        "--set1",
+        "tests/data/set_counter_modified.vcd",
+        "--set2",
+        "tests/data/counter.vcd",
     ]);
     assert_eq!(output.status.code(), Some(1), "Expected exit 1");
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -459,12 +603,14 @@ fn test_cli_wavediff_set_filter_includes_value_diff() {
 #[test]
 fn test_cli_wavediff_set1_only_no_positional_fails() {
     // Only --set1 without positional args should fail
-    let output = run_wavediff_cli(&[
-        "--set1", "tests/data/counter.vcd",
-    ]);
+    let output = run_wavediff_cli(&["--set1", "tests/data/counter.vcd"]);
     assert_eq!(output.status.code(), Some(2), "Expected exit 2");
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("FILE1 and FILE2 are required"), "Expected missing args error: {}", stderr);
+    assert!(
+        stderr.contains("FILE1 and FILE2 are required"),
+        "Expected missing args error: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -472,14 +618,20 @@ fn test_cli_wavediff_no_args_fails() {
     let output = run_wavediff_cli(&[]);
     assert_eq!(output.status.code(), Some(2), "Expected exit 2");
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("FILE1 and FILE2 are required"), "Expected missing args error: {}", stderr);
+    assert!(
+        stderr.contains("FILE1 and FILE2 are required"),
+        "Expected missing args error: {}",
+        stderr
+    );
 }
 
 #[test]
 fn test_cli_wavecat_multi_file_filter() {
     // Filter should work with multi-file
     let output = run_wavecat_cli(&[
-        "--names", "--filter", "*.clk",
+        "--names",
+        "--filter",
+        "*.clk",
         "tests/data/set_clk.vcd",
         "tests/data/set_counter.vcd",
     ]);

@@ -7,12 +7,12 @@
 //------------------------------------------------------------------------------
 
 use clap::Parser;
+use std::path::PathBuf;
+use std::process;
 use wavetools::{
     apply_filter, names_only, open_wave_files, parse_filter_patterns, write_attrs, write_names,
     write_signals_wave_multi, NameOptions, SignalOutputOptions, WaveFormat,
 };
-use std::path::PathBuf;
-use std::process;
 
 const VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
@@ -24,7 +24,9 @@ const VERSION: &str = concat!(
 #[derive(Parser, Debug)]
 #[command(name = "wavecat")]
 #[command(version = VERSION)]
-#[command(about = "Read and display waveform files (FST or VCD)", long_about = "\
+#[command(
+    about = "Read and display waveform files (FST or VCD)",
+    long_about = "\
 Read and display waveform files (FST or VCD format).
 Multiple files are overlayed (their signals are unioned).
 
@@ -34,7 +36,8 @@ Examples:
   wavecat --names --sort clk.vcd counters.vcd
   wavecat --start 100 --end 500 sim.fst
   wavecat --filter '*.clk' --time-pound sim.fst
-  wavecat --format vcd dump.dat")]
+  wavecat --format vcd dump.dat"
+)]
 struct Args {
     /// Waveform file(s) to read (FST or VCD); multiple files are overlayed
     #[arg(required = true)]
@@ -114,8 +117,13 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
 
     if args.attrs {
         let mut stdout = std::io::stdout();
-        write_attrs(&mut stdout, &hierarchy.signal_map, &hierarchy.names, args.sort)
-            .map_err(|e| format!("Failed to write attrs: {}", e))?;
+        write_attrs(
+            &mut stdout,
+            &hierarchy.signal_map,
+            &hierarchy.names,
+            args.sort,
+        )
+        .map_err(|e| format!("Failed to write attrs: {}", e))?;
     } else if args.names {
         let names = names_only(&hierarchy.signal_map, &hierarchy.names);
         let mut stdout = std::io::stdout();
