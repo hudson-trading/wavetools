@@ -26,8 +26,8 @@ impl Display for InvalidIdCode {
 impl Error for InvalidIdCode { }
 
 /// An ID used within the file to refer to a particular variable.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
-pub struct IdCode(u64);
+#[derive(Debug, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
+pub struct IdCode(Vec<u8>);
 
 const ID_CHAR_MIN: u8 = b'!';
 const ID_CHAR_MAX: u8 = b'~';
@@ -38,26 +38,31 @@ impl IdCode {
         if v.is_empty() {
             return Err(InvalidIdCode::Empty);
         }
-        let mut result = 0u64;
-        for &i in v.iter().rev() {
+        for &i in v.iter() {
             if !(ID_CHAR_MIN..=ID_CHAR_MAX).contains(&i) {
                 return Err(InvalidIdCode::InvalidChars);
             }
-            let c = ((i - ID_CHAR_MIN) as u64) + 1;
-            result = result
-                .checked_mul(NUM_ID_CHARS)
-                .and_then(|x| x.checked_add(c))
-                .ok_or(InvalidIdCode::TooLong)?;
         }
-        Ok(IdCode(result - 1))
+        Ok(IdCode(v.to_vec()))
     }
 
     /// An arbitrary IdCode with a short representation.
-    pub const FIRST: IdCode = IdCode(0);
+    pub fn first() -> IdCode {
+        IdCode(vec![ID_CHAR_MIN])
+    }
 
     /// Returns the IdCode following this one in an arbitrary sequence.
     pub fn next(&self) -> IdCode {
-        IdCode(self.0 + 1)
+        let mut next = self.0.clone();
+        for c in &mut next {
+            if *c < ID_CHAR_MAX {
+                *c += 1;
+                return IdCode(next);
+            }
+            *c = ID_CHAR_MIN;
+        }
+        next.push(ID_CHAR_MIN);
+        IdCode(next)
     }
 }
 
@@ -70,32 +75,41 @@ impl FromStr for IdCode {
 
 impl From<u32> for IdCode {
     fn from(i: u32) -> IdCode {
-        IdCode(i as u64)
+        IdCode::from(i as u64)
     }
 }
 
 impl From<u64> for IdCode {
     fn from(i: u64) -> IdCode {
-        IdCode(i)
+        let mut i = i;
+        let mut result = Vec::new();
+        loop {
+            let r = i % NUM_ID_CHARS;
+            result.push(r as u8 + ID_CHAR_MIN);
+            if i < NUM_ID_CHARS {
+                break;
+            }
+            i = i / NUM_ID_CHARS - 1;
+        }
+        IdCode(result)
     }
 }
 
 impl From<IdCode> for u64 {
     fn from(i: IdCode) -> u64 {
-        i.0
+        let mut result = 0u64;
+        for &b in i.0.iter().rev() {
+            let c = ((b - ID_CHAR_MIN) as u64) + 1;
+            result = result * NUM_ID_CHARS + c;
+        }
+        result - 1
     }
 }
 
 impl Display for IdCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut i = self.0;
-        loop {
-            let r = i % NUM_ID_CHARS;
-            write!(f, "{}", (r as u8 + ID_CHAR_MIN) as char)?;
-            if i < NUM_ID_CHARS {
-                break;
-            }
-            i = i / NUM_ID_CHARS - 1;
+        for &c in &self.0 {
+            write!(f, "{}", c as char)?;
         }
         Ok(())
     }
@@ -103,7 +117,7 @@ impl Display for IdCode {
 
 #[test]
 fn test_id_code() {
-    let mut id = IdCode::FIRST;
+    let mut id = IdCode::first();
     for i in 0..10000 {
         println!("{} {}", i, id);
         assert_eq!(id.to_string().parse::<IdCode>().unwrap(), id);
@@ -124,5 +138,8 @@ fn test_id_code() {
         "n999999999".parse::<IdCode>().unwrap().to_string(),
         "n999999999"
     );
-    assert!("n9999999999".parse::<IdCode>().is_err());
+    assert_eq!(
+        "hbi_data__dec".parse::<IdCode>().unwrap().to_string(),
+        "hbi_data__dec"
+    );
 }

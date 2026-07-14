@@ -50,7 +50,7 @@ impl<W: io::Write> Writer<W> {
     pub fn new(writer: W) -> Writer<W> {
         Writer {
             writer,
-            next_id_code: IdCode::FIRST,
+            next_id_code: IdCode::first(),
             scope_depth: 0,
         }
     }
@@ -185,8 +185,8 @@ impl<W: io::Write> Writer<W> {
         reference: &str,
         index: Option<ReferenceIndex>,
     ) -> io::Result<IdCode> {
-        let id = self.next_id_code;
-        self.var_def(var_type, width, id, reference, index)?;
+        let id = self.next_id_code.clone();
+        self.var_def(var_type, width, id.clone(), reference, index)?;
         Ok(id)
     }
 
@@ -199,7 +199,7 @@ impl<W: io::Write> Writer<W> {
 
     /// Writes a `$var` command from a [`Var`] structure from the parser.
     pub fn var(&mut self, v: &Var) -> io::Result<()> {
-        self.var_def(v.var_type, v.size, v.code, &v.reference[..], v.index)
+        self.var_def(v.var_type, v.size, v.code.clone(), &v.reference[..], v.index)
     }
 
     /// Writes a `$enddefinitions` command to end the header.
@@ -279,23 +279,23 @@ impl<W: io::Write> Writer<W> {
     /// Writes a command from a [`Command`] enum as parsed by the parser.
     pub fn command(&mut self, c: &Command) -> io::Result<()> {
         use Command::*;
-        match *c {
+        match c {
             Comment(ref c) => self.comment(&c[..]),
             Date(ref c) => self.date(&c[..]),
             Version(ref c) => self.version(&c[..]),
-            Timescale(v, u) => self.timescale(v, u),
-            ScopeDef(t, ref i) => self.scope_def(t, &i[..]),
+            Timescale(v, u) => self.timescale(*v, *u),
+            ScopeDef(t, ref i) => self.scope_def(*t, &i[..]),
             Upscope => self.upscope(),
-            VarDef(t, s, i, ref r, idx) => self.var_def(t, s, i, &r[..], idx),
+            VarDef(t, s, i, ref r, idx) => self.var_def(*t, *s, i.clone(), &r[..], *idx),
             Enddefinitions => self.enddefinitions(),
-            Timestamp(t) => self.timestamp(t),
-            ChangeScalar(i, v) => self.change_scalar(i, v),
-            ChangeVector(i, ref v) => self.change_vector(i, v),
-            ChangeReal(i, v) => self.change_real(i, v),
-            ChangeString(i, ref v) => self.change_string(i, v),
-            Begin(c) => self.begin(c),
+            Timestamp(t) => self.timestamp(*t),
+            ChangeScalar(i, v) => self.change_scalar(i.clone(), *v),
+            ChangeVector(i, ref v) => self.change_vector(i.clone(), v),
+            ChangeReal(i, v) => self.change_real(i.clone(), *v),
+            ChangeString(i, ref v) => self.change_string(i.clone(), v),
+            Begin(c) => self.begin(*c),
             End(_) => self.end(),
-            AttributeBegin(t, ref s, ref n, a) => self.attribute_begin(t, s, n, a),
+            AttributeBegin(t, ref s, ref n, a) => self.attribute_begin(*t, s, n, *a),
             AttributeEnd => self.attribute_end(),
         }
     }
