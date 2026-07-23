@@ -7,8 +7,8 @@
 //------------------------------------------------------------------------------
 
 use wavetools::{
-    compare_signal_meta, compare_signal_names, diff_waves, open_and_read_waves, DiffOptions,
-    NameOptions,
+    compare_signal_meta, compare_signal_names, diff_waves, open_and_read_waves,
+    retain_common_signals, DiffOptions, NameOptions,
 };
 
 // Helper to check signal name differences
@@ -334,6 +334,32 @@ Only in tests/data/counter.fst: {\"t.the_sub.cyc_plus_one\"}
 Only in tests/data/counter.sig_name.diff.fst: {\"t.the_sub.blargh\"}
 ";
     assert_eq!(msg, expected, "Expected exact signal name difference");
+}
+
+#[test]
+fn test_retain_common_signals_drops_asymmetric_names() {
+    let name_options = NameOptions::default();
+    let (_reader1, mut hier1, _reader2, mut hier2) = open_and_read_waves(
+        "tests/data/counter.fst",
+        "tests/data/counter.new_sig.diff.fst",
+        &name_options,
+    )
+    .expect("Failed to open wave files");
+
+    let common_count = retain_common_signals(&mut hier1, &mut hier2);
+    assert!(common_count > 0, "Expected at least one common signal");
+
+    let (only_in_1, only_in_2) = compare_signal_names(&hier1, &hier2);
+    assert!(
+        only_in_1.is_empty(),
+        "Unexpected file1-only signals: {:?}",
+        only_in_1
+    );
+    assert!(
+        only_in_2.is_empty(),
+        "Unexpected file2-only signals: {:?}",
+        only_in_2
+    );
 }
 
 #[test]
