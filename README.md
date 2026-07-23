@@ -158,6 +158,7 @@ they are included in their respective sets.
 | `--set1 <FILE>` | File(s) for set 1; may be specified multiple times |
 | `--set2 <FILE>` | File(s) for set 2; may be specified multiple times |
 | `-f, --filter <PATTERN>` | Filter signals by glob pattern; may be repeated or space-separated |
+| `--ignore-xz` | Ignore value differences only for bits where either side is X or Z |
 
 ### Exit codes
 
@@ -210,6 +211,14 @@ Compare with tolerance for real-valued signals:
 
 ```
 wavediff --epsilon 0.001 golden.fst test.fst
+```
+
+Ignore only the bit positions where either side contains an X or Z. Known-bit
+differences still count, so `0x` versus `11` is still a diff because the
+known bit differs:
+
+```
+wavediff --ignore-xz golden.fst test.fst
 ```
 
 Combine multiple files per side and diff the merged sets:
