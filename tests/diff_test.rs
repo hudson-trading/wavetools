@@ -190,6 +190,67 @@ fn test_buffered_file2_only_diffs_are_sorted() {
 }
 
 #[test]
+fn test_report_timestamps_are_monotonic_across_buffered_file2_only_rows() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-monotonic-{}-1.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-monotonic-{}-2.vcd", pid));
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! a $end
+$var wire 1 \" b $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0\"
+#20
+1!
+",
+    )
+    .expect("write file1");
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! a $end
+$var wire 1 \" b $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0\"
+#10
+1\"
+#30
+1!
+",
+    )
+    .expect("write file2");
+
+    let (has_diff, output) = run_wave_diff_test(
+        file1.to_str().expect("temp path should be UTF-8"),
+        file2.to_str().expect("temp path should be UTF-8"),
+    );
+    assert!(
+        has_diff,
+        "expected buffered file2-only row and missing time"
+    );
+
+    let expected = "\
+10 t.b 1 (only in file2)
+20 t.a 1 (missing time in file2)
+";
+    assert_eq!(output, expected, "diff output should be time-sorted");
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+}
+
+#[test]
 fn test_terminal_same_tick_file1_only_changes_are_trimmed() {
     let pid = std::process::id();
     let file1 = std::env::temp_dir().join(format!("wavetools-terminal-trim-{}-1.vcd", pid));
@@ -587,6 +648,22 @@ fn test_diff_vcd_aliased_idcodes_reports_each_name_once() {
     assert_eq!(
         output, expected,
         "Expected one diff per aliased signal name"
+    );
+}
+
+#[test]
+fn test_diff_aliased_to_split_idcodes_reports_matched_name_once() {
+    let (has_diff, output) = run_wave_diff_test(
+        "tests/data/diff/alias_split_a.vcd",
+        "tests/data/error/alias_split_b_value_diff.vcd",
+    );
+    assert!(has_diff, "Changed split alias should differ");
+    let expected = "\
+0 m.s1.c 0 != 1
+";
+    assert_eq!(
+        output, expected,
+        "Expected only the split signal name to be reported"
     );
 }
 
@@ -1897,4 +1974,534 @@ fn test_cli_wavediff_reports_ignored_longer_input() {
         "stderr should report ignored trailing samples: {}",
         stderr
     );
+}
+
+#[test]
+fn test_cli_fst_diff_writes_side_by_side_signals() {
+    let out_path =
+        std::env::temp_dir().join(format!("wavetools-fst-diff-{}.fst", std::process::id()));
+    let _ = std::fs::remove_file(&out_path);
+    let out_str = out_path.to_str().expect("temp path should be UTF-8");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            "--fst-diff",
+            out_str,
+            "tests/data/counter.fst",
+            "tests/data/counter.value.diff.fst",
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "Expected value diff. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        out_path.exists(),
+        "Expected fst diff output at {}",
+        out_path.display()
+    );
+
+    let names = std::process::Command::new(env!("CARGO_BIN_EXE_wavecat"))
+        .args(["--names", "--sort", out_str])
+        .output()
+        .expect("Failed to run wavecat");
+    assert!(
+        names.status.success(),
+        "wavecat should read fst diff. stderr: {}",
+        String::from_utf8_lossy(&names.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&names.stdout);
+    let name_lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        name_lines.contains(&"t.clk"),
+        "missing unsuffixed matching clock signal: {}",
+        stdout
+    );
+    assert!(
+        name_lines.contains(&"t.cyc"),
+        "missing unsuffixed matching signal: {}",
+        stdout
+    );
+    assert!(
+        !name_lines.contains(&"t.the_sub.cyc_plus_one"),
+        "differing signal should not also get an unsuffixed trace: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("t.the_sub.cyc_plus_one__counter"),
+        "missing file1 side signal: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("t.the_sub.cyc_plus_one__counter_value_diff"),
+        "missing file2 side signal: {}",
+        stdout
+    );
+
+    let attrs = std::process::Command::new(env!("CARGO_BIN_EXE_wavecat"))
+        .args(["--attrs", out_str])
+        .output()
+        .expect("Failed to run wavecat --attrs");
+    assert!(
+        attrs.status.success(),
+        "wavecat should read fst diff attrs. stderr: {}",
+        String::from_utf8_lossy(&attrs.stderr)
+    );
+    let attrs_stdout = String::from_utf8_lossy(&attrs.stdout);
+    assert!(
+        attrs_stdout
+            .lines()
+            .any(|line| line == "t.cyc  integer  32"),
+        "matching signal should keep raw integer metadata: {}",
+        attrs_stdout
+    );
+    assert!(
+        !attrs_stdout
+            .lines()
+            .any(|line| line == "t.the_sub.cyc_plus_one  integer  32"),
+        "differing signal should not have unsuffixed metadata: {}",
+        attrs_stdout
+    );
+    assert!(
+        attrs_stdout.contains("t.the_sub.cyc_plus_one__counter  integer  32"),
+        "file1 side signal should keep raw integer metadata: {}",
+        attrs_stdout
+    );
+    assert!(
+        attrs_stdout.contains("t.the_sub.cyc_plus_one__counter_value_diff  integer  32"),
+        "file2 side signal should keep raw integer metadata: {}",
+        attrs_stdout
+    );
+
+    let values = std::process::Command::new(env!("CARGO_BIN_EXE_wavecat"))
+        .arg(out_str)
+        .output()
+        .expect("Failed to run wavecat values");
+    assert!(
+        values.status.success(),
+        "wavecat should read fst diff values. stderr: {}",
+        String::from_utf8_lossy(&values.stderr)
+    );
+    let values_stdout = String::from_utf8_lossy(&values.stdout);
+    assert!(
+        values_stdout.contains("0 t.cyc 00000000000000000000000000000000"),
+        "matching signal should include raw unsuffixed values: {}",
+        values_stdout
+    );
+    assert!(
+        !values_stdout
+            .lines()
+            .any(|line| line.starts_with("0 t.the_sub.cyc_plus_one ")),
+        "differing signal should not include unsuffixed values: {}",
+        values_stdout
+    );
+    assert!(
+        values_stdout
+            .contains("0 t.the_sub.cyc_plus_one__counter 00000000000000000000000000000001"),
+        "file1 side signal should include initial raw values: {}",
+        values_stdout
+    );
+    assert!(
+        values_stdout.contains(
+            "0 t.the_sub.cyc_plus_one__counter_value_diff 00000000000000000000000000000001"
+        ),
+        "file2 side signal should include initial raw values: {}",
+        values_stdout
+    );
+    assert!(
+        values_stdout
+            .contains("10 t.the_sub.cyc_plus_one__counter 00000000000000000000000000000010"),
+        "file1 side signal should include divergent raw values: {}",
+        values_stdout
+    );
+    assert!(
+        values_stdout.contains(
+            "10 t.the_sub.cyc_plus_one__counter_value_diff 00000000000000000000000000000100"
+        ),
+        "file2 side signal should include divergent raw values: {}",
+        values_stdout
+    );
+
+    let _ = std::fs::remove_file(&out_path);
+}
+
+#[test]
+fn test_cli_fst_diff_does_not_bake_ranges_into_signal_names() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-fst-range-base-{}.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-fst-range-diff-{}.vcd", pid));
+    let out_path = std::env::temp_dir().join(format!("wavetools-fst-range-{}.fst", pid));
+    let _ = std::fs::remove_file(&out_path);
+
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 2 ! data [1:0] $end
+$upscope $end
+$enddefinitions $end
+#0
+b00 !
+#10
+b01 !
+",
+    )
+    .expect("write file1");
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 2 ! data [1:0] $end
+$upscope $end
+$enddefinitions $end
+#0
+b00 !
+#10
+b10 !
+",
+    )
+    .expect("write file2");
+
+    let out_str = out_path.to_str().expect("temp path should be UTF-8");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            "--fst-diff",
+            out_str,
+            file1.to_str().expect("temp path should be UTF-8"),
+            file2.to_str().expect("temp path should be UTF-8"),
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "Expected value diff. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let names = std::process::Command::new(env!("CARGO_BIN_EXE_wavecat"))
+        .args(["--names", "--sort", out_str])
+        .output()
+        .expect("Failed to run wavecat");
+    assert!(
+        names.status.success(),
+        "wavecat should read fst diff. stderr: {}",
+        String::from_utf8_lossy(&names.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&names.stdout);
+    assert!(
+        stdout.contains("t.data__"),
+        "range signal should keep its base name: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("_1_0"),
+        "range suffix should not be baked into generated FST identifiers: {}",
+        stdout
+    );
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+    let _ = std::fs::remove_file(out_path);
+}
+
+#[test]
+fn test_cli_fst_diff_includes_side_only_signals() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-fst-side-only-a-{}.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-fst-side-only-b-{}.vcd", pid));
+    let out_path = std::env::temp_dir().join(format!("wavetools-fst-side-only-{}.fst", pid));
+    let _ = std::fs::remove_file(&out_path);
+
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! clk $end
+$var wire 2 \" only_a $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b01 \"
+#10
+1!
+b10 \"
+",
+    )
+    .expect("write file1");
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! clk $end
+$var wire 2 \" only_b $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b11 \"
+#10
+1!
+b00 \"
+",
+    )
+    .expect("write file2");
+
+    let out_str = out_path.to_str().expect("temp path should be UTF-8");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            "--fst-diff",
+            out_str,
+            file1.to_str().expect("temp path should be UTF-8"),
+            file2.to_str().expect("temp path should be UTF-8"),
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "Expected name diff. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let names = std::process::Command::new(env!("CARGO_BIN_EXE_wavecat"))
+        .args(["--names", "--sort", out_str])
+        .output()
+        .expect("Failed to run wavecat names");
+    assert!(
+        names.status.success(),
+        "wavecat should read fst diff. stderr: {}",
+        String::from_utf8_lossy(&names.stderr)
+    );
+    let names_stdout = String::from_utf8_lossy(&names.stdout);
+    assert!(
+        names_stdout
+            .lines()
+            .any(|line| line.starts_with("t.only_a__")),
+        "missing file1-only suffixed trace: {}",
+        names_stdout
+    );
+    assert!(
+        names_stdout
+            .lines()
+            .any(|line| line.starts_with("t.only_b__")),
+        "missing file2-only suffixed trace: {}",
+        names_stdout
+    );
+    assert!(
+        !names_stdout.lines().any(|line| line == "t.only_a"),
+        "file1-only signal should not be unsuffixed: {}",
+        names_stdout
+    );
+    assert!(
+        !names_stdout.lines().any(|line| line == "t.only_b"),
+        "file2-only signal should not be unsuffixed: {}",
+        names_stdout
+    );
+
+    let values = std::process::Command::new(env!("CARGO_BIN_EXE_wavecat"))
+        .arg(out_str)
+        .output()
+        .expect("Failed to run wavecat values");
+    assert!(
+        values.status.success(),
+        "wavecat should read fst diff values. stderr: {}",
+        String::from_utf8_lossy(&values.stderr)
+    );
+    let values_stdout = String::from_utf8_lossy(&values.stdout);
+    assert!(
+        values_stdout
+            .lines()
+            .any(|line| line.starts_with("0 t.only_a__") && line.ends_with("01")),
+        "missing file1-only raw value: {}",
+        values_stdout
+    );
+    assert!(
+        values_stdout
+            .lines()
+            .any(|line| line.starts_with("0 t.only_b__") && line.ends_with("11")),
+        "missing file2-only raw value: {}",
+        values_stdout
+    );
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+    let _ = std::fs::remove_file(out_path);
+}
+
+#[test]
+fn test_cli_fst_diff_omits_missing_side_changes() {
+    let out_path = std::env::temp_dir().join(format!(
+        "wavetools-fst-diff-edge-{}.fst",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&out_path);
+    let out_str = out_path.to_str().expect("temp path should be UTF-8");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            "--fst-diff",
+            out_str,
+            "tests/data/counter.fst",
+            "tests/data/counter.edge_time.diff.fst",
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "Expected edge-time diff. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let values = std::process::Command::new(env!("CARGO_BIN_EXE_wavecat"))
+        .arg(out_str)
+        .output()
+        .expect("Failed to run wavecat");
+    assert!(
+        values.status.success(),
+        "wavecat should read fst diff. stderr: {}",
+        String::from_utf8_lossy(&values.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&values.stdout);
+    assert!(
+        !stdout.lines().any(|line| line.starts_with("0 t.clk ")),
+        "differing clock should not be represented as an unsuffixed matching trace: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("20 t.clk__counter 0"),
+        "missing file1 raw clock edge: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("21 t.clk__counter_edge_time_diff 0"),
+        "missing file2 raw clock edge: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("MISSING"),
+        "fst diff should not emit synthetic MISSING values: {}",
+        stdout
+    );
+
+    let _ = std::fs::remove_file(&out_path);
+}
+
+#[test]
+fn test_cli_fst_diff_truncates_to_shorter_input() {
+    let pid = std::process::id();
+    let file1 = std::env::temp_dir().join(format!("wavetools-fst-trim-{}-1.vcd", pid));
+    let file2 = std::env::temp_dir().join(format!("wavetools-fst-trim-{}-2.vcd", pid));
+    let out_path = std::env::temp_dir().join(format!("wavetools-fst-trim-{}.fst", pid));
+    let _ = std::fs::remove_file(&out_path);
+
+    std::fs::write(
+        &file1,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! clk $end
+$var wire 1 \" a $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0\"
+#10
+1!
+1\"
+#20
+0!
+0\"
+#30
+1!
+1\"
+#40
+0!
+0\"
+",
+    )
+    .expect("write file1");
+    std::fs::write(
+        &file2,
+        "\
+$timescale 1ns $end
+$scope module t $end
+$var wire 1 ! clk $end
+$var wire 1 \" a $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0\"
+#10
+1!
+0\"
+#20
+0!
+0\"
+",
+    )
+    .expect("write file2");
+
+    let out_str = out_path.to_str().expect("temp path should be UTF-8");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wavediff"))
+        .args([
+            "--fst-diff",
+            out_str,
+            file1.to_str().expect("temp path should be UTF-8"),
+            file2.to_str().expect("temp path should be UTF-8"),
+        ])
+        .output()
+        .expect("Failed to run wavediff");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "Expected value diff. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let values = std::process::Command::new(env!("CARGO_BIN_EXE_wavecat"))
+        .arg(out_str)
+        .output()
+        .expect("Failed to run wavecat");
+    assert!(
+        values.status.success(),
+        "wavecat should read fst diff. stderr: {}",
+        String::from_utf8_lossy(&values.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&values.stdout);
+    assert!(
+        stdout.contains("20 t.clk 0"),
+        "fst diff should include samples through the shorter input: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("30 "),
+        "fst diff should not include raw samples after the shorter input: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("40 "),
+        "fst diff should not include raw samples after the shorter input: {}",
+        stdout
+    );
+
+    let _ = std::fs::remove_file(file1);
+    let _ = std::fs::remove_file(file2);
+    let _ = std::fs::remove_file(out_path);
 }
