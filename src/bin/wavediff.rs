@@ -10,8 +10,9 @@ use clap::Parser;
 use std::io::Write;
 use std::path::PathBuf;
 use wavetools::{
-    apply_filter, compare_signal_meta, compare_signal_names, diff_wave_sets,
-    open_and_read_wave_sets, parse_filter_patterns, DiffOptions, NameOptions, WaveHierarchy,
+    apply_filter, compare_signal_meta, compare_signal_names, diff_wave_sets_with_report,
+    open_and_read_wave_sets, parse_filter_patterns, DiffOptions, DiffOutputOptions, DiffSide,
+    NameOptions, WaveHierarchy,
 };
 
 const VERSION: &str = concat!(
@@ -201,8 +202,24 @@ fn run(args: Args) -> Result<bool, String> {
         real_epsilon: args.epsilon,
     };
     let mut stdout = std::io::stdout();
-    let value_diffs = diff_wave_sets(&mut stdout, sets, &diff_options)
-        .map_err(|e| format!("Failed to diff files: {}", e))?;
+    let diff_report = diff_wave_sets_with_report(
+        &mut stdout,
+        sets,
+        &diff_options,
+        &DiffOutputOptions::default(),
+    )
+    .map_err(|e| format!("Failed to diff files: {}", e))?;
 
-    Ok(has_differences || value_diffs)
+    if let Some(trim) = &diff_report.trim {
+        let label = match trim.side {
+            DiffSide::First => label1.display(),
+            DiffSide::Second => label2.display(),
+        };
+        eprintln!(
+            "Ignored trailing samples in {} after time {} to match the shorter input",
+            label, trim.trim_time
+        );
+    }
+
+    Ok(has_differences || diff_report.has_differences)
 }
