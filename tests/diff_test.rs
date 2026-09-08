@@ -836,6 +836,20 @@ mod common;
 use common::{run_wavecat_cli, run_wavediff_cli};
 
 #[test]
+fn test_cli_wavediff_rejects_non_finite_epsilon() {
+    for epsilon in ["NaN", "inf"] {
+        let output = run_wavediff_cli(&[
+            "--epsilon",
+            epsilon,
+            "tests/data/counter.fst",
+            "tests/data/counter.fst",
+        ]);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("must be finite and non-negative"));
+    }
+}
+
+#[test]
 fn test_cli_attr_diff_nonzero_exit() {
     // Different attrs, same values -- should exit 1
     let output = run_wavediff_cli(&["tests/data/enum_attrs.a.vcd", "tests/data/enum_attrs.b.vcd"]);

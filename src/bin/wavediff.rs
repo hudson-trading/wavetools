@@ -144,8 +144,11 @@ fn run(args: Args) -> Result<bool, String> {
         }
     }
     if let Some(eps) = args.epsilon {
-        if eps < 0.0 {
-            return Err(format!("--epsilon must be non-negative, got {}", eps));
+        if !eps.is_finite() || eps < 0.0 {
+            return Err(format!(
+                "--epsilon must be finite and non-negative, got {}",
+                eps
+            ));
         }
     }
 
