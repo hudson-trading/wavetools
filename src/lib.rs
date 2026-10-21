@@ -8,6 +8,9 @@
 
 mod cat;
 mod diff;
+mod output;
+mod output_header;
+pub use output::write_wave_file;
 #[allow(dead_code, unused_imports, clippy::manual_repeat_n)]
 mod vcd;
 
@@ -227,6 +230,9 @@ pub(crate) fn kway_merge_channels<T>(
 /// Direction string for signals with no explicit direction
 pub const IMPLICIT_DIRECTION: &str = "implicit";
 
+// FST real values are IEEE 754 binary64 doubles; VCD declares their width in bits.
+const VCD_REAL_WIDTH_BITS: u32 = 64;
+
 /// Variable metadata normalized across FST and VCD formats
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarMeta {
@@ -400,121 +406,120 @@ fn build_hierarchy<R: BufRead + Seek>(
     let mut tree = NameTree::new();
     let mut scope_id: NameId = tree.root();
     let mut last_handle: Option<usize> = None;
+    let mut pending_attrs = Vec::new();
     let mut enum_tables: HashMap<u64, (String, Vec<(String, String)>)> = HashMap::new();
     let mut enum_names: EnumNameRegistry = HashMap::new();
     let mut conflict_error: Option<String> = None;
 
     fst_reader
-        .read_hierarchy(|entry| match entry {
-            FstHierarchyEntry::Scope { name, .. } => {
-                scope_id = tree.intern(scope_id, &name);
-                last_handle = None;
+        .read_hierarchy(|entry| {
+            // Structural annotations immediately before a scope describe that
+            // scope, not the preceding variable.
+            match &entry {
+                FstHierarchyEntry::Scope { .. } => pending_attrs.clear(),
+                FstHierarchyEntry::Var { .. }
+                | FstHierarchyEntry::UpScope
+                | FstHierarchyEntry::AttributeEnd => {
+                    flush_attrs(&mut signal_map, last_handle, &mut pending_attrs);
+                }
+                _ => {}
             }
-            FstHierarchyEntry::UpScope => {
-                scope_id = tree.nodes[scope_id as usize].parent.unwrap_or(tree.root());
-                last_handle = None;
-            }
-            FstHierarchyEntry::Var {
-                tpe,
-                direction,
-                name,
-                length,
-                handle,
-                ..
-            } => {
-                let name = if options.no_range_space {
-                    name.replace(" [", "[")
-                } else {
-                    name
-                };
-                let leaf = tree.intern(scope_id, &name);
-                let idx = handle.get_index();
-                last_handle = Some(idx);
-                // FST stores real sizes in bytes (8); normalize to bits (64)
-                // to match VCD convention.
-                let size = match tpe {
-                    FstVarType::Real | FstVarType::RealParameter | FstVarType::RealTime => 64,
-                    _ => length,
-                };
-                let entry = signal_map
-                    .entry(idx)
-                    .or_insert_with(|| SignalInfo { vars: Vec::new() });
-                entry.vars.push(VarEntry {
-                    name: leaf,
-                    meta: VarMeta {
-                        var_type: fst_var_type_str(tpe),
-                        size,
-                        direction: fst_direction_str(direction),
-                    },
-                    attrs: Vec::new(),
-                });
-            }
-            FstHierarchyEntry::EnumTable {
-                name,
-                handle,
-                mapping,
-            } => {
-                // fst_reader stores mapping as (encoding, value_name);
-                // normalize to (value_name, encoding) to match VCD convention.
-                let mapping: Vec<(String, String)> =
-                    mapping.into_iter().map(|(enc, val)| (val, enc)).collect();
-                if conflict_error.is_none() {
-                    if let Err(e) = check_enum_conflict(&mut enum_names, &name, &mapping) {
-                        conflict_error = Some(e);
+            match entry {
+                FstHierarchyEntry::Scope { name, .. } => {
+                    scope_id = tree.intern(scope_id, &name);
+                    last_handle = None;
+                }
+                FstHierarchyEntry::UpScope => {
+                    scope_id = tree.nodes[scope_id as usize].parent.unwrap_or(tree.root());
+                    last_handle = None;
+                }
+                FstHierarchyEntry::Var {
+                    tpe,
+                    direction,
+                    name,
+                    length,
+                    handle,
+                    ..
+                } => {
+                    let name = if options.no_range_space {
+                        name.replace(" [", "[")
+                    } else {
+                        name
+                    };
+                    let leaf = tree.intern(scope_id, &name);
+                    let idx = handle.get_index();
+                    last_handle = Some(idx);
+                    // FST stores real sizes in bytes (8); normalize to bits (64)
+                    // to match VCD convention.
+                    let size = match tpe {
+                        FstVarType::Real | FstVarType::RealParameter | FstVarType::RealTime => {
+                            VCD_REAL_WIDTH_BITS
+                        }
+                        _ => length,
+                    };
+                    let entry = signal_map
+                        .entry(idx)
+                        .or_insert_with(|| SignalInfo { vars: Vec::new() });
+                    entry.vars.push(VarEntry {
+                        name: leaf,
+                        meta: VarMeta {
+                            var_type: fst_var_type_str(tpe),
+                            size,
+                            direction: fst_direction_str(direction),
+                        },
+                        attrs: Vec::new(),
+                    });
+                }
+                FstHierarchyEntry::EnumTable {
+                    name,
+                    handle,
+                    mapping,
+                } => {
+                    // fst_reader stores mapping as (encoding, value_name);
+                    // normalize to (value_name, encoding) to match VCD convention.
+                    let mapping: Vec<(String, String)> =
+                        mapping.into_iter().map(|(enc, val)| (val, enc)).collect();
+                    if conflict_error.is_none() {
+                        if let Err(e) = check_enum_conflict(&mut enum_names, &name, &mapping) {
+                            conflict_error = Some(e);
+                        }
+                    }
+                    enum_tables.insert(handle, (name, mapping));
+                }
+                FstHierarchyEntry::EnumTableRef { handle } => {
+                    if let Some(var_idx) = last_handle {
+                        if let Some((name, mapping)) = enum_tables.get(&handle) {
+                            push_attr(&mut signal_map, var_idx, format_enum_attr(name, mapping));
+                        }
                     }
                 }
-                enum_tables.insert(handle, (name, mapping));
-            }
-            FstHierarchyEntry::EnumTableRef { handle } => {
-                if let Some(var_idx) = last_handle {
-                    if let Some((name, mapping)) = enum_tables.get(&handle) {
-                        push_attr(&mut signal_map, var_idx, format_enum_attr(name, mapping));
-                    }
+                FstHierarchyEntry::Array {
+                    name,
+                    array_type,
+                    left,
+                    right,
+                } if last_handle.is_some() => {
+                    pending_attrs.push(format_array_attr(&name, array_type, left, right));
                 }
-            }
-            FstHierarchyEntry::Array {
-                name,
-                array_type,
-                left,
-                right,
-            } => {
-                if let Some(var_idx) = last_handle {
-                    push_attr(
-                        &mut signal_map,
-                        var_idx,
-                        format_array_attr(&name, array_type, left, right),
-                    );
+                FstHierarchyEntry::Pack {
+                    name,
+                    pack_type,
+                    value,
+                } if last_handle.is_some() => {
+                    pending_attrs.push(format_pack_attr(&name, pack_type, value));
                 }
-            }
-            FstHierarchyEntry::Pack {
-                name,
-                pack_type,
-                value,
-            } => {
-                if let Some(var_idx) = last_handle {
-                    push_attr(
-                        &mut signal_map,
-                        var_idx,
-                        format_pack_attr(&name, pack_type, value),
-                    );
+                FstHierarchyEntry::SVEnum {
+                    name,
+                    enum_type,
+                    value,
+                } if last_handle.is_some() => {
+                    pending_attrs.push(format_sv_enum_attr(&name, enum_type, value));
                 }
+                _ => {}
             }
-            FstHierarchyEntry::SVEnum {
-                name,
-                enum_type,
-                value,
-            } => {
-                if let Some(var_idx) = last_handle {
-                    push_attr(
-                        &mut signal_map,
-                        var_idx,
-                        format_sv_enum_attr(&name, enum_type, value),
-                    );
-                }
-            }
-            _ => {}
         })
         .map_err(|e| format!("Failed to read hierarchy: {}", e))?;
+    flush_attrs(&mut signal_map, last_handle, &mut pending_attrs);
 
     if let Some(e) = conflict_error {
         return Err(e);
@@ -555,6 +560,7 @@ pub struct VcdData {
     parser: vcd::Parser<BufReader<File>>,
     id_to_idx: HashMap<vcd::IdCode, usize>,
     current_time: u64,
+    header: vcd::Header,
 }
 
 /// A reader backed by either an FST file (streamed via callbacks) or a VCD
@@ -697,12 +703,12 @@ fn format_array_attr(name: &str, array_type: FstArrayType, left: i32, right: i32
         FstArrayType::Packed => "packed",
         FstArrayType::Sparse => "sparse",
     };
-    let arg = ((left as i64) << 32) | (right as u32 as i64);
+    let arg = ((left as i64) << u32::BITS) | (right as u32 as i64);
     format!("array {}: {} {}", subtype, name, arg)
 }
 
 /// Format an FST pack attribute to match VCD output.
-/// VCD format: "class <subtype>: <name> <value>"
+/// VCD format: "pack <subtype>: <name> <value>"
 fn format_pack_attr(name: &str, pack_type: FstPackType, value: u64) -> String {
     let subtype = match pack_type {
         FstPackType::None => "none",
@@ -710,7 +716,7 @@ fn format_pack_attr(name: &str, pack_type: FstPackType, value: u64) -> String {
         FstPackType::Packed => "packed",
         FstPackType::TaggedPacked => "tagged_packed",
     };
-    format!("class {}: {} {}", subtype, name, value)
+    format!("pack {}: {} {}", subtype, name, value)
 }
 
 /// Format an FST SV enum attribute to match VCD output.
@@ -746,6 +752,15 @@ fn push_attr(signal_map: &mut SignalMap, handle: usize, attr: String) {
     }
 }
 
+// Resolve structural annotations once their following declaration is known.
+fn flush_attrs(signal_map: &mut SignalMap, handle: Option<usize>, attrs: &mut Vec<String>) {
+    for attr in attrs.drain(..) {
+        if let Some(handle) = handle {
+            push_attr(signal_map, handle, attr);
+        }
+    }
+}
+
 /// Accumulates VCD hierarchy state while walking the scope tree.
 struct VcdHierarchyBuilder<'a> {
     tree: NameTree,
@@ -770,7 +785,15 @@ impl<'a> VcdHierarchyBuilder<'a> {
 
     fn walk(&mut self, items: &[vcd::ScopeItem], scope_id: NameId) -> Result<(), String> {
         let mut last_idx: Option<usize> = None;
+        let mut pending_attrs = Vec::new();
         for item in items {
+            match item {
+                vcd::ScopeItem::Scope(_) => pending_attrs.clear(),
+                vcd::ScopeItem::Var(_) | vcd::ScopeItem::AttributeEnd => {
+                    flush_attrs(&mut self.signal_map, last_idx, &mut pending_attrs);
+                }
+                _ => {}
+            }
             match item {
                 vcd::ScopeItem::Scope(scope) => {
                     let child_id = self.tree.intern(scope_id, &scope.identifier);
@@ -819,8 +842,8 @@ impl<'a> VcdHierarchyBuilder<'a> {
                     // For misc 07 (enum table): distinguish definitions from references.
                     // Definitions have a non-empty, non-"" name with the full enum details.
                     // References have "" as the name and the handle as arg.
-                    let is_enum_table =
-                        attr.attr_type == vcd::AttributeType::Misc && attr.subtype == "07";
+                    let is_enum_table = attr.attr_type == vcd::AttributeType::Misc
+                        && attr.subtype == vcd::MiscAttributeSubtype::EnumTable.to_hex();
                     if is_enum_table {
                         let name_trimmed = attr.name.trim_matches('"');
                         if !name_trimmed.is_empty() {
@@ -849,12 +872,22 @@ impl<'a> VcdHierarchyBuilder<'a> {
                             "{} {}: {} {}",
                             attr.attr_type, attr.subtype, attr.name, attr.arg
                         );
-                        push_attr(&mut self.signal_map, idx, attr_str);
+                        if matches!(
+                            attr.attr_type,
+                            vcd::AttributeType::Pack
+                                | vcd::AttributeType::Array
+                                | vcd::AttributeType::Enum
+                        ) {
+                            pending_attrs.push(attr_str);
+                        } else {
+                            push_attr(&mut self.signal_map, idx, attr_str);
+                        }
                     }
                 }
                 _ => {}
             }
         }
+        flush_attrs(&mut self.signal_map, last_idx, &mut pending_attrs);
         Ok(())
     }
 
@@ -1074,6 +1107,7 @@ fn open_as_vcd(
         parser,
         id_to_idx,
         current_time: 0,
+        header,
     };
     Ok((
         WaveReader::Vcd(vcd_data),

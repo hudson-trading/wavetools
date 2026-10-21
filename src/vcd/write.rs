@@ -82,6 +82,7 @@ impl<W: io::Write> Writer<W> {
                 ScopeItem::Scope(ref s) => self.scope(s)?,
                 ScopeItem::Comment(ref c) => self.comment(c)?,
                 ScopeItem::Attribute(ref a) => self.attribute(a)?,
+                ScopeItem::AttributeEnd => self.attribute_end()?,
             }
         }
         self.enddefinitions()
@@ -94,21 +95,27 @@ impl<W: io::Write> Writer<W> {
 
     /// Writes a `$date` command.
     pub fn date(&mut self, v: &str) -> io::Result<()> {
-        writeln!(self.writer, "$date\n    {}\n$end", v)
+        writeln!(self.writer, "$date\n{}\n$end", v.trim())
     }
 
     /// Writes a `$version` command.
     pub fn version(&mut self, v: &str) -> io::Result<()> {
-        writeln!(self.writer, "$version\n    {}\n$end", v)
+        writeln!(self.writer, "$version\n{}\n$end", v.trim())
     }
 
     /// Writes a `$timescale` command.
     pub fn timescale(&mut self, ts: u32, unit: TimescaleUnit) -> io::Result<()> {
-        writeln!(self.writer, "$timescale {} {} $end", ts, unit)
+        writeln!(self.writer, "$timescale\n{}{}\n$end", ts, unit)
+    }
+
+    // GTKWave/Verilator use one space per hierarchy level, starting at one.
+    fn indent(&mut self) -> io::Result<()> {
+        write!(self.writer, "{:width$}", "", width = self.scope_depth + 1)
     }
 
     /// Writes a `$scope` command.
     pub fn scope_def(&mut self, t: ScopeType, i: &str) -> io::Result<()> {
+        self.indent()?;
         self.scope_depth += 1;
         writeln!(self.writer, "$scope {} {} $end", t, i)
     }
@@ -127,6 +134,7 @@ impl<W: io::Write> Writer<W> {
             "Generating invalid VCD: upscope without a matching scope"
         );
         self.scope_depth -= 1;
+        self.indent()?;
         writeln!(self.writer, "$upscope $end")
     }
 
@@ -140,6 +148,7 @@ impl<W: io::Write> Writer<W> {
                 ScopeItem::Scope(ref s) => self.scope(s)?,
                 ScopeItem::Comment(ref c) => self.comment(c)?,
                 ScopeItem::Attribute(ref a) => self.attribute(a)?,
+                ScopeItem::AttributeEnd => self.attribute_end()?,
             }
         }
         self.upscope()
@@ -154,13 +163,10 @@ impl<W: io::Write> Writer<W> {
         reference: &str,
         index: Option<ReferenceIndex>,
     ) -> io::Result<()> {
-        debug_assert!(
-            self.scope_depth > 0,
-            "Generating invalid VCD: variable must be in a scope"
-        );
         if id >= self.next_id_code {
             self.next_id_code = id.next();
         }
+        self.indent()?;
         match index {
             Some(idx) => writeln!(
                 self.writer,
@@ -259,6 +265,7 @@ impl<W: io::Write> Writer<W> {
         name: &str,
         arg: i64,
     ) -> io::Result<()> {
+        self.indent()?;
         if name.is_empty() {
             writeln!(self.writer, "$attrbegin {} {} {} $end", attr_type, subtype, arg)
         } else {
@@ -268,6 +275,7 @@ impl<W: io::Write> Writer<W> {
 
     /// Writes a `$attrend` command (GTKWave/FST extension).
     pub fn attribute_end(&mut self) -> io::Result<()> {
+        self.indent()?;
         writeln!(self.writer, "$attrend $end")
     }
 

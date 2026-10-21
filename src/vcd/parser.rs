@@ -476,7 +476,7 @@ impl<R: io::BufRead> Parser<R> {
                 Some(Ok(AttributeBegin(attr_type, subtype, name, arg))) => {
                     children.push(ScopeItem::Attribute(Attribute::new(attr_type, subtype, name, arg)));
                 }
-                Some(Ok(AttributeEnd)) => {}
+                Some(Ok(AttributeEnd)) => children.push(ScopeItem::AttributeEnd),
                 Some(Ok(_)) => return Err(self.error(ParseErrorKind::UnexpectedHeaderCommand).into()),
                 Some(Err(e)) => return Err(e),
                 None => {
@@ -534,7 +534,7 @@ impl<R: io::BufRead> Parser<R> {
                 Some(Ok(AttributeBegin(attr_type, subtype, name, arg))) => {
                     header.items.push(ScopeItem::Attribute(Attribute::new(attr_type, subtype, name, arg)));
                 }
-                Some(Ok(AttributeEnd)) => {}
+                Some(Ok(AttributeEnd)) => header.items.push(ScopeItem::AttributeEnd),
                 Some(Ok(_)) => return Err(self.error(ParseErrorKind::UnexpectedHeaderCommand).into()),
                 Some(Err(e)) => return Err(e),
                 None => {
@@ -1526,10 +1526,14 @@ $enddefinitions $end
             x => panic!("Expected Scope, found {:?}", x),
         };
 
-        // attrend is consumed but not stored
-        assert_eq!(scope.items.len(), 2);
+        // Preserve attribute boundaries so writing the header is lossless.
+        assert_eq!(scope.items.len(), 3);
         assert!(matches!(&scope.items[0], ScopeItem::Attribute(..)));
-        assert!(matches!(&scope.items[1], ScopeItem::Var(..)));
+        assert!(matches!(&scope.items[1], ScopeItem::AttributeEnd));
+        assert!(matches!(&scope.items[2], ScopeItem::Var(..)));
+        let mut output = Vec::new();
+        crate::vcd::Writer::new(&mut output).header(&header).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains("$attrend $end"));
     }
 
     #[test]

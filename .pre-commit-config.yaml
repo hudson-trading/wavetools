@@ -7,3 +7,9 @@ repos:
         language: system
         pass_filenames: false
         types_or: [rust]
+      - id: cargo-clippy
+        name: Clippy (deny warnings)
+        entry: cargo clippy -- -D warnings
+        language: system
+        pass_filenames: false
+        files: '(\.rs$|(^|/)Cargo\.(toml|lock)$|^\.cargo/config(\.toml)?$)'

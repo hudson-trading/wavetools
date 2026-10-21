@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process;
 use wavetools::{
     apply_filter, names_only, open_wave_files, parse_filter_patterns, write_attrs, write_names,
-    write_signals_wave_multi, NameOptions, SignalOutputOptions, WaveFormat,
+    write_signals_wave_multi, write_wave_file, NameOptions, SignalOutputOptions, WaveFormat,
 };
 
 const VERSION: &str = concat!(
@@ -25,9 +25,9 @@ const VERSION: &str = concat!(
 #[command(name = "wavecat")]
 #[command(version = VERSION)]
 #[command(
-    about = "Read and display waveform files (FST or VCD)",
+    about = "Read, display, and export waveform files (FST or VCD)",
     long_about = "\
-Read and display waveform files (FST or VCD format).
+Read, display, and export waveform files (FST or VCD format).
 Multiple files are overlayed (their signals are unioned).
 
 Examples:
@@ -36,7 +36,9 @@ Examples:
   wavecat --names --sort clk.vcd counters.vcd
   wavecat --start 100 --end 500 sim.fst
   wavecat --filter '*.clk' --time-pound sim.fst
-  wavecat --format vcd dump.dat"
+  wavecat --format vcd dump.dat
+  wavecat sim.fst -o sim.vcd
+  wavecat sim.vcd -o dump.dat --out-format fst"
 )]
 struct Args {
     /// Waveform file(s) to read (FST or VCD); multiple files are overlayed
@@ -71,9 +73,17 @@ struct Args {
     #[arg(long)]
     no_range_space: bool,
 
-    /// Force file format instead of auto-detecting (fst or vcd)
+    /// Force input file format instead of auto-detecting (fst or vcd)
     #[arg(long, value_parser = parse_format)]
     format: Option<WaveFormat>,
+
+    /// Write a waveform file (format inferred from .vcd or .fst)
+    #[arg(short, long, conflicts_with_all = ["names", "attrs"])]
+    out: Option<PathBuf>,
+
+    /// Force output format (fst or vcd); requires --out
+    #[arg(long, value_parser = parse_format, requires = "out")]
+    out_format: Option<WaveFormat>,
 
     /// Filter signals by glob pattern(s); may be specified multiple times or as a
     /// space-separated list (e.g. --filter "*.foo *.bar" or --filter "*.foo" --filter "*.bar")
@@ -105,6 +115,40 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
         }
     }
 
+    let out_format = args
+        .out
+        .as_ref()
+        .map(|path| {
+            args.out_format.map(Ok).unwrap_or_else(|| {
+                path.extension()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| parse_format(s).ok())
+                    .ok_or_else(|| {
+                        "Cannot infer output format; use .vcd/.fst or --out-format".to_string()
+                    })
+            })
+        })
+        .transpose()?;
+    if let Some(out) = &args.out {
+        // Reject aliases of an input before either writer can truncate it.
+        if let Ok(target) = std::fs::canonicalize(out) {
+            for input in &args.file {
+                if std::fs::canonicalize(input).ok().as_ref() == Some(&target) {
+                    return Err("Output file must differ from all input files".into());
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if let (Ok(a), Ok(b)) = (std::fs::metadata(input), std::fs::metadata(out)) {
+                        if a.dev() == b.dev() && a.ino() == b.ino() {
+                            return Err("Output file must differ from all input files".into());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let name_options = NameOptions {
         no_range_space: args.no_range_space,
     };
@@ -115,7 +159,18 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
 
     apply_filter(&mut hierarchy, &patterns);
 
-    if args.attrs {
+    if let (Some(path), Some(format)) = (&args.out, out_format) {
+        write_wave_file(
+            path,
+            format,
+            readers,
+            &offsets,
+            &hierarchy,
+            args.start.unwrap_or(0),
+            args.end,
+        )
+        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+    } else if args.attrs {
         let mut stdout = std::io::stdout();
         write_attrs(
             &mut stdout,

@@ -42,7 +42,7 @@ fn test_vcd_array_unpacked_attr() {
 fn test_vcd_class_packed_attr() {
     let attrs = get_signal_attrs("tests/data/struct_attrs.vcd", "top.cyc");
     assert_eq!(attrs.len(), 1);
-    assert_eq!(attrs[0], "class packed: members 2");
+    assert_eq!(attrs[0], "pack packed: members 2");
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn test_cli_struct_attrs_output() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("array packed: bounds 17179869187"));
     assert!(stdout.contains("array unpacked: bounds 1"));
-    assert!(stdout.contains("class packed: members 2"));
+    assert!(stdout.contains("pack packed: members 2"));
     assert!(stdout.contains("enum state_t: IDLE=00 ACTIVE=01 DONE=10"));
 }
 

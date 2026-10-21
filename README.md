@@ -26,7 +26,7 @@ Binaries are written to `target/release/`.
 
 ## wavecat
 
-Read and display waveform files. Auto-detects FST or VCD format from file contents.
+Read, display, and export waveform files. Auto-detects FST or VCD format from file contents.
 Multiple files can be specified and their signals are overlayed (unioned). Each file
 must contribute a disjoint set of signal names.
 
@@ -47,7 +47,9 @@ wavecat [OPTIONS] <FILE>...
 | `--sort` | Sort entries lexically |
 | `--time-pound` | Prefix times with `#` |
 | `--no-range-space` | Remove space before range brackets (e.g. `dat[3:0]` instead of `dat [3:0]`) |
-| `--format <FORMAT>` | Force file format (`fst` or `vcd`) instead of auto-detecting |
+| `--format <FORMAT>` | Force input file format (`fst` or `vcd`) instead of auto-detecting |
+| `-o, --out <FILE>` | Write a waveform file; infer format from `.vcd` or `.fst` (case-insensitive) |
+| `--out-format <FORMAT>` | Force output format (`fst` or `vcd`); requires `--out` |
 | `-f, --filter <PATTERN>` | Filter signals by glob pattern; may be repeated or space-separated |
 
 ### Examples
@@ -130,6 +132,26 @@ Overlay multiple files (signals are unioned):
 ```
 wavecat --names --sort clk.vcd counters.vcd
 ```
+
+### Export waveform files
+
+Convert between formats, filter signals, or combine files:
+
+```sh
+wavecat sim.fst -o sim.vcd
+wavecat sim.vcd --out sim.fst
+wavecat sim.fst --filter '*.clk' --start 100 --end 500 -o clocks.vcd
+wavecat clk.vcd counters.vcd -o combined.fst
+wavecat sim.fst -o dump.dat --out-format vcd
+wavecat sim.fst -o golden.out --out-format vcd
+```
+
+Without `--out`, wavecat continues to print its text listing to stdout. With
+`--out`, it writes a waveform file and prints no listing. An unrecognized or
+missing output extension requires `--out-format`. Existing output files are
+replaced; an output file must differ from every input file. `--out` cannot be
+combined with `--names` or `--attrs`. `--sort` and `--time-pound` affect only the
+text listing.
 
 ## wavediff
 

@@ -164,10 +164,11 @@ pub fn write_signals_wave<W: Write>(
 }
 
 /// A signal change sent through a channel for multi-reader merging
-struct CatChange {
-    time: u64,
-    handle: usize,
-    value: String,
+pub(crate) struct CatChange {
+    pub time: u64,
+    /// None marks a final timestamp without a value change.
+    pub handle: Option<usize>,
+    pub value: String,
 }
 
 /// Send signal changes from a single WaveReader through a channel.
@@ -203,7 +204,7 @@ fn send_cat_changes(
                 };
                 let _ = tx.send(CatChange {
                     time,
-                    handle: handle.get_index() + handle_offset,
+                    handle: Some(handle.get_index() + handle_offset),
                     value: value_str,
                 });
             });
@@ -219,14 +220,29 @@ fn send_cat_changes(
                         break;
                     }
                 }
-                let _ = tx.send(CatChange {
-                    time,
-                    handle: handle_idx + handle_offset,
-                    value: value_str,
-                });
+                if tx
+                    .send(CatChange {
+                        time,
+                        handle: Some(handle_idx + handle_offset),
+                        value: value_str,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
         }
     }
+    // Carry the final timestamp even when no signal changes there.
+    let final_time = match &reader {
+        WaveReader::Fst(r) => r.get_header().end_time,
+        WaveReader::Vcd(r) => r.current_time,
+    };
+    let _ = tx.send(CatChange {
+        time: end.map_or(final_time, |end| end.min(final_time)).max(start),
+        handle: None,
+        value: String::new(),
+    });
     Ok(())
 }
 
@@ -254,77 +270,35 @@ pub fn write_signals_wave_multi<W: Write>(
         );
     }
 
-    // Spawn a thread per reader, each sending CatChanges to its own channel.
-    // Threads send raw handle+value; name resolution happens here on the consumer side,
-    // avoiding a full handle_to_names clone per thread.
-    let mut rxs = Vec::with_capacity(readers.len());
-    let mut threads = Vec::new();
-
-    for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
-        let (tx, rx) = channel::bounded(CHANNEL_BOUND);
-        threads.push(std::thread::spawn(move || {
-            send_cat_changes(reader, offset, start, end, tx)
-        }));
-        rxs.push(rx);
-    }
-
     let mut current_time: Option<u64> = None;
     let mut batch: Vec<(String, String)> = Vec::new();
 
-    let merge_result = crate::kway_merge_channels(
-        &rxs,
-        |c| c.time,
-        |change| {
-            if options.sort {
-                if let Some(prev_time) = current_time {
-                    if prev_time != change.time {
-                        flush_signal_batch(writer, prev_time, &mut batch, options.time_pound)?;
-                    }
-                }
-                current_time = Some(change.time);
-            }
-            if let Some(names) = handle_to_names.get(&change.handle) {
-                for name in names {
-                    if options.sort {
-                        batch.push((name.clone(), change.value.clone()));
-                    } else {
-                        write_signal_line(
-                            writer,
-                            change.time,
-                            name,
-                            &change.value,
-                            options.time_pound,
-                        )?;
-                    }
+    merge_changes(readers, offsets, start, end, |change| {
+        if options.sort {
+            if let Some(prev_time) = current_time {
+                if prev_time != change.time {
+                    flush_signal_batch(writer, prev_time, &mut batch, options.time_pound)?;
                 }
             }
-            Ok(())
-        },
-    );
-
-    if merge_result.is_err() {
-        drop(rxs);
-    }
-
-    let mut thread_result = Ok(());
-    for t in threads {
-        match t.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                if thread_result.is_ok() {
-                    thread_result = Err(e);
-                }
-            }
-            Err(_) => {
-                if thread_result.is_ok() {
-                    thread_result = Err(io::Error::other("wavecat reader thread panicked"));
+            current_time = Some(change.time);
+        }
+        if let Some(names) = change.handle.and_then(|h| handle_to_names.get(&h)) {
+            for name in names {
+                if options.sort {
+                    batch.push((name.clone(), change.value.clone()));
+                } else {
+                    write_signal_line(
+                        writer,
+                        change.time,
+                        name,
+                        &change.value,
+                        options.time_pound,
+                    )?;
                 }
             }
         }
-    }
-
-    merge_result?;
-    thread_result?;
+        Ok(())
+    })?;
 
     if options.sort {
         if let Some(time) = current_time {
@@ -377,6 +351,56 @@ fn write_vcd_signals<W: Write>(
             flush_signal_batch(writer, time, &mut batch, options.time_pound)?;
         }
     }
+
+    Ok(())
+}
+
+/// Stream merged changes with bounded queues and propagate reader errors.
+pub(crate) fn merge_changes(
+    readers: Vec<WaveReader>,
+    offsets: &[usize],
+    start: u64,
+    end: Option<u64>,
+    on_change: impl FnMut(CatChange) -> io::Result<()>,
+) -> io::Result<()> {
+    // Spawn a thread per reader, each sending CatChanges to its own channel.
+    // Threads send raw handle+value; name resolution happens here on the consumer side,
+    // avoiding a full handle_to_names clone per thread.
+    let mut rxs = Vec::with_capacity(readers.len());
+    let mut threads = Vec::new();
+
+    for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
+        let (tx, rx) = channel::bounded(CHANNEL_BOUND);
+        threads.push(std::thread::spawn(move || {
+            send_cat_changes(reader, offset, start, end, tx)
+        }));
+        rxs.push(rx);
+    }
+
+    let merge_result = crate::kway_merge_channels(&rxs, |c| c.time, on_change);
+    if merge_result.is_err() {
+        drop(rxs);
+    }
+
+    let mut thread_result = Ok(());
+    for t in threads {
+        match t.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if thread_result.is_ok() {
+                    thread_result = Err(e);
+                }
+            }
+            Err(_) => {
+                if thread_result.is_ok() {
+                    thread_result = Err(io::Error::other("wavecat reader thread panicked"));
+                }
+            }
+        }
+    }
+
+    merge_result?;
+    thread_result?;
 
     Ok(())
 }

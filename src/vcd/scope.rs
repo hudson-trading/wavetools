@@ -394,6 +394,8 @@ impl Var {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ScopeItem {
+    /// End of a GTKWave attribute block.
+    AttributeEnd,
     /// `$scope` - Child scope
     Scope(Scope),
 

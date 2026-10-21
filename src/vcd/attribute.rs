@@ -39,7 +39,7 @@ impl Display for AttributeType {
                 AttributeType::Misc => "misc",
                 AttributeType::Array => "array",
                 AttributeType::Enum => "enum",
-                AttributeType::Pack => "class",
+                AttributeType::Pack => "pack",
             }
         )
     }
