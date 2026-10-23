@@ -22,7 +22,7 @@ use fst_reader::{
     is_fst_file, FstArrayType, FstEnumType, FstHierarchyEntry, FstPackType, FstReader,
     FstVarDirection, FstVarType,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, Write};
 use std::path::Path;
@@ -332,6 +332,33 @@ pub fn apply_filter(hier: &mut WaveHierarchy, patterns: &[glob::Pattern]) {
         });
         !info.vars.is_empty()
     });
+}
+
+fn signal_name_set(hier: &WaveHierarchy) -> HashSet<String> {
+    hier.signal_map
+        .values()
+        .flat_map(|info| info.vars.iter().map(|v| hier.names.format_path(v.name)))
+        .collect()
+}
+
+fn retain_signal_names(hier: &mut WaveHierarchy, names: &HashSet<String>) {
+    let tree = &hier.names;
+    hier.signal_map.retain(|_, info| {
+        info.vars
+            .retain(|v| names.contains(&tree.format_path(v.name)));
+        !info.vars.is_empty()
+    });
+}
+
+/// Drop signals whose fully-qualified names are not present in both
+/// hierarchies. Returns the number of common names retained.
+pub fn retain_common_signals(hier1: &mut WaveHierarchy, hier2: &mut WaveHierarchy) -> usize {
+    let names1 = signal_name_set(hier1);
+    let names2 = signal_name_set(hier2);
+    let common: HashSet<String> = names1.intersection(&names2).cloned().collect();
+    retain_signal_names(hier1, &common);
+    retain_signal_names(hier2, &common);
+    common.len()
 }
 
 /// An FST reader over a buffered file

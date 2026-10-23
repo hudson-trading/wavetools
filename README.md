@@ -158,6 +158,7 @@ they are included in their respective sets.
 | `--set1 <FILE>` | File(s) for set 1; may be specified multiple times |
 | `--set2 <FILE>` | File(s) for set 2; may be specified multiple times |
 | `-f, --filter <PATTERN>` | Filter signals by glob pattern; may be repeated or space-separated |
+| `--ignore-missing` | Ignore signals that are missing from either input |
 | `--ignore-xz` | Ignore value differences only for bits where either side is X or Z |
 
 ### Exit codes
@@ -237,6 +238,12 @@ Skip metadata comparison (only compare signal values):
 
 ```
 wavediff --no-attrs golden.fst test.fst
+```
+
+Ignore missing signals when one side has extra dumped signals:
+
+```
+wavediff --ignore-missing golden.fst test.fst
 ```
 
 Restrict the comparison to a subset of signals with a glob filter:

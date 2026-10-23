@@ -482,6 +482,46 @@ fn test_cli_wavediff_name_mismatch_exits_difference() {
 }
 
 #[test]
+fn test_cli_wavediff_ignore_missing_ignores_name_mismatch() {
+    let output = run_wavediff_cli(&[
+        "--ignore-missing",
+        "tests/data/counter.fst",
+        "tests/data/counter.new_sig.diff.fst",
+    ]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "Expected common-signal comparison to ignore asymmetric names. stderr: {} stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !stderr.contains("Signal name mismatch"),
+        "ignore-missing should suppress name mismatch output: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_cli_wavediff_ignore_missing_still_reports_value_diff() {
+    let output = run_wavediff_cli(&[
+        "--ignore-missing",
+        "tests/data/counter.fst",
+        "tests/data/counter.value.diff.fst",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "Expected exit 1");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("t.the_sub.cyc_plus_one"),
+        "Expected value diff for common signal: {}",
+        stdout
+    );
+}
+
+#[test]
 fn test_cli_wavediff_set_conflict() {
     // set_clk + set_overlap in set1 = duplicate signal, exit 2
     let output = run_wavediff_cli(&[
