@@ -176,11 +176,14 @@ $ wavediff golden.fst test.fst
 10 t.the_sub.cyc_plus_one 00000000000000000000000000000010 != 00000000000000000000000000000100
 ```
 
-The second file ends earlier, so time 50 is missing:
+If one file has only trailing samples beyond the other, the text report prints
+all diffs up to the shorter input and ignores later samples from the longer
+input. The notice is reported on stderr after stdout diff rows have been
+emitted:
 
 ```
 $ wavediff golden.fst short.fst
-50 t.clk 1 (missing time in file2)
+Ignored trailing samples in golden.fst after time 40 to match the shorter input
 ```
 
 A clock edge moved from time 20 to time 21:
