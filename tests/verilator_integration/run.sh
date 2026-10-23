@@ -8,7 +8,7 @@
 #   VERILATOR_DIR   Pre-existing verilator source dir (skip clone+build if its
 #                   bin/verilator_bin already exists)
 #   VERILATOR_TAG   Release tag to clone (default: latest v* tag on origin)
-#   WORK_DIR        Scratch dir for clone/build/venv (default: target/verilator-integration)
+#   WORK_DIR        Scratch dir for clone/build (default: target/verilator-integration)
 #   JOBS            Driver parallelism (default: 0 = all cores)
 #   SCENARIO        Driver scenario flag (default: --vlt)
 #   PYTHON3         Python 3.10+ interpreter to use for the venv (default: probe
@@ -129,22 +129,18 @@ export PATH="$VERILATOR_DIR/bin:$PATH"
 # ---------------------------------------------------------------------------
 # 4. Set up a venv with verilator's python test dependencies.
 # ---------------------------------------------------------------------------
-VENV_DIR="$WORK_DIR/venv"
-# Discard an existing venv if it was built with too-old a Python.
-if [[ -x "$VENV_DIR/bin/python3" ]] && \
-   ! "$VENV_DIR/bin/python3" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
-    log "Existing venv uses Python < 3.10; recreating with $PYTHON3"
-    rm -rf "$VENV_DIR"
-fi
-if [[ ! -x "$VENV_DIR/bin/python3" ]]; then
-    log "Creating venv at $VENV_DIR with $PYTHON3"
-    "$PYTHON3" -m venv "$VENV_DIR"
+# Keep the venv outside target/: rust-cache may restore only part of it.
+VENV_DIR="$REPO_ROOT/.venv-verilator-integration"
+if [[ ! -f "$VENV_DIR/bin/activate" || ! -f "$VENV_DIR/pyvenv.cfg" ]] || \
+   ! "$VENV_DIR/bin/python3" -c 'import sys, pip; sys.exit(0 if sys.version_info >= (3,10) and sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
+    log "Creating or repairing venv at $VENV_DIR with $PYTHON3"
+    "$PYTHON3" -m venv --clear "$VENV_DIR"
 fi
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 log "Installing verilator python-dev-requirements"
-pip install --quiet --upgrade pip
-pip install --quiet -r "$VERILATOR_DIR/python-dev-requirements.txt"
+python3 -m pip install --quiet --upgrade pip
+python3 -m pip install --quiet -r "$VERILATOR_DIR/python-dev-requirements.txt"
 
 # ---------------------------------------------------------------------------
 # 5. Discover trace_identical tests.
