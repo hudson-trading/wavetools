@@ -10,7 +10,7 @@ mod cat;
 mod diff;
 mod output;
 mod output_header;
-pub use output::write_wave_file;
+pub use output::{write_wave_file, WaveOutputOptions};
 #[allow(dead_code, unused_imports, clippy::manual_repeat_n)]
 mod vcd;
 

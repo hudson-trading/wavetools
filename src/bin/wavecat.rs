@@ -12,6 +12,7 @@ use std::process;
 use wavetools::{
     apply_filter, names_only, open_wave_files, parse_filter_patterns, write_attrs, write_names,
     write_signals_wave_multi, write_wave_file, NameOptions, SignalOutputOptions, WaveFormat,
+    WaveOutputOptions,
 };
 
 const VERSION: &str = concat!(
@@ -84,6 +85,10 @@ struct Args {
     /// Force output format (fst or vcd); requires --out
     #[arg(long, value_parser = parse_format, requires = "out")]
     out_format: Option<WaveFormat>,
+
+    /// Omit the recording date/time from output; requires --out
+    #[arg(long, requires = "out")]
+    no_date: bool,
 
     /// Filter signals by glob pattern(s); may be specified multiple times or as a
     /// space-separated list (e.g. --filter "*.foo *.bar" or --filter "*.foo" --filter "*.bar")
@@ -166,8 +171,11 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
             readers,
             &offsets,
             &hierarchy,
-            args.start.unwrap_or(0),
-            args.end,
+            &WaveOutputOptions {
+                start: args.start.unwrap_or(0),
+                end: args.end,
+                no_date: args.no_date,
+            },
         )
         .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
     } else if args.attrs {

@@ -50,6 +50,7 @@ wavecat [OPTIONS] <FILE>...
 | `--format <FORMAT>` | Force input file format (`fst` or `vcd`) instead of auto-detecting |
 | `-o, --out <FILE>` | Write a waveform file; infer format from `.vcd` or `.fst` (case-insensitive) |
 | `--out-format <FORMAT>` | Force output format (`fst` or `vcd`); requires `--out` |
+| `--no-date` | Omit the recording date/time; requires `--out` |
 | `-f, --filter <PATTERN>` | Filter signals by glob pattern; may be repeated or space-separated |
 
 ### Examples

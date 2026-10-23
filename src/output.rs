@@ -198,6 +198,17 @@ impl Body {
     }
 }
 
+/// Options for waveform file output.
+#[derive(Debug, Default)]
+pub struct WaveOutputOptions {
+    /// First simulation timestamp to include.
+    pub start: u64,
+    /// Last simulation timestamp to include (inclusive).
+    pub end: Option<u64>,
+    /// Omit the recording date; simulation timestamps are unaffected.
+    pub no_date: bool,
+}
+
 /// Export a filtered hierarchy and merged signal changes as VCD or FST.
 /// Times remain absolute. At `start`, emit the most recent known value of each
 /// signal, followed by changes through the inclusive `end`.
@@ -211,9 +222,13 @@ pub fn write_wave_file(
     mut readers: Vec<WaveReader>,
     offsets: &[usize],
     hierarchy: &WaveHierarchy,
-    start: u64,
-    end: Option<u64>,
+    options: &WaveOutputOptions,
 ) -> io::Result<()> {
+    let WaveOutputOptions {
+        start,
+        end,
+        no_date,
+    } = *options;
     if readers.is_empty() || readers.len() != offsets.len() {
         return Err(err("Invalid reader offsets"));
     }
@@ -226,22 +241,21 @@ pub fn write_wave_file(
             return Err(err("Cannot export an overlay with different timescales"));
         }
     }
+    // File-wide descriptive metadata comes from the first input.
+    let (date, version) = match &readers[0] {
+        WaveReader::Fst(reader) => {
+            let header = reader.get_header();
+            (Some(header.date), Some(header.version))
+        }
+        WaveReader::Vcd(reader) => (reader.header.date.clone(), reader.header.version.clone()),
+    };
+    let date = date.filter(|value| !no_date && !value.trim().is_empty());
     let mut body = match format {
         WaveFormat::Vcd => {
             let (factor, unit) = vcd_timescale(exponent)?;
             let mut writer = vcd::Writer::new(BufWriter::new(File::create(path)?));
-            // File-wide descriptive metadata comes from the first input.
-            let (date, version) = match &readers[0] {
-                WaveReader::Fst(reader) => {
-                    let header = reader.get_header();
-                    (Some(header.date), Some(header.version))
-                }
-                WaveReader::Vcd(reader) => {
-                    (reader.header.date.clone(), reader.header.version.clone())
-                }
-            };
-            if let Some(date) = date.filter(|value| !value.trim().is_empty()) {
-                writer.date(&date)?;
+            if let Some(date) = date.as_deref() {
+                writer.date(date)?;
             }
             if let Some(version) = version.filter(|value| !value.trim().is_empty()) {
                 writer.version(&version)?;
@@ -250,7 +264,9 @@ pub fn write_wave_file(
             crate::output_header::write_header(&mut writer, &mut readers, offsets, hierarchy)?;
             Body::Vcd(writer)
         }
-        WaveFormat::Fst => create_fst_body(path, exponent, hierarchy)?,
+        WaveFormat::Fst => {
+            create_fst_body(path, exponent, hierarchy, date.as_deref().unwrap_or(""))?
+        }
     };
     let mut initial = HashMap::new();
     let mut current = None;
@@ -320,7 +336,12 @@ pub fn write_wave_file(
 }
 
 /// FST uses a reconstructed, sorted hierarchy; VCD follows the source header.
-fn create_fst_body(path: &Path, exponent: i8, hierarchy: &WaveHierarchy) -> io::Result<Body> {
+fn create_fst_body(
+    path: &Path,
+    exponent: i8,
+    hierarchy: &WaveHierarchy,
+    date: &str,
+) -> io::Result<Body> {
     let mut vars: Vec<_> = hierarchy
         .signal_map
         .iter()
@@ -343,7 +364,7 @@ fn create_fst_body(path: &Path, exponent: i8, hierarchy: &WaveHierarchy) -> io::
             start_time: 0,
             timescale_exponent: exponent,
             version: "wavetools".into(),
-            date: String::new(),
+            date: date.trim().into(),
             file_type: fst_writer::FstFileType::Verilog,
         },
     )

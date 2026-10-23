@@ -513,3 +513,84 @@ fn fst_rejects_events_without_replacing_output() {
     success(cat(&[&input, "--filter", "tick", "-o", &out]));
     assert_eq!(success(cat(&[&out])), "0 tick 1\n5 tick 1\n10 tick 1\n");
 }
+
+#[test]
+fn no_date_omits_recording_time_without_changing_waveform() {
+    let temp = Temp::new();
+    let input = temp.input("$date\nThu Oct 22 08:01:32 2026\n$end\n$version\nTest producer\n$end\n$timescale 1ns $end\n$var wire 1 ! a $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n");
+    assert!(!cat(&[&input, "--no-date"]).status.success());
+    for source in [input.as_str(), "tests/data/counter.fst"] {
+        let dated = temp.path("dated.vcd");
+        success(cat(&[source, "-o", &dated]));
+        let dated_text = fs::read_to_string(&dated).unwrap();
+        assert!(dated_text.contains("$date\n"));
+        for ext in ["vcd", "fst"] {
+            let out = temp.path(&format!("no-date.{ext}"));
+            success(cat(&[source, "--no-date", "-o", &out]));
+            success(diff(&[source, &out]));
+            if ext == "vcd" {
+                let text = fs::read_to_string(&out).unwrap();
+                assert!(!text.contains("$date"));
+                // Removing the date must leave version, timescale, and data intact.
+                let date_start = dated_text.find("$date\n").unwrap();
+                let date_end =
+                    date_start + dated_text[date_start..].find("$end\n").unwrap() + "$end\n".len();
+                assert_eq!(
+                    text,
+                    format!("{}{}", &dated_text[..date_start], &dated_text[date_end..])
+                );
+            } else {
+                let reader = fst_reader::FstReader::open(std::io::BufReader::new(
+                    fs::File::open(&out).unwrap(),
+                ))
+                .unwrap();
+                assert!(reader.get_header().date.is_empty());
+            }
+        }
+    }
+    let out = temp.path("overlay.vcd");
+    success(cat(&[
+        &input,
+        "tests/data/counter.fst",
+        "--no-date",
+        "-o",
+        &out,
+    ]));
+    assert!(!fs::read_to_string(out).unwrap().contains("$date"));
+}
+
+#[test]
+fn fst_output_copies_first_input_date() {
+    let temp = Temp::new();
+    let date = "Thu Oct 22 08:01:32 2026";
+    let input = temp.input(&format!(
+        "$date\n{date}\n\n$end\n$var wire 1 ! a $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n"
+    ));
+    let undated = temp.path("undated.vcd");
+    fs::write(
+        &undated,
+        "$var wire 1 ! b $end\n$enddefinitions $end\n#0\n0!\n",
+    )
+    .unwrap();
+    let dated_fst = temp.path("dated.fst");
+    success(cat(&[&input, "-o", &dated_fst]));
+    let out = temp.path("out.fst");
+    for (sources, expected) in [
+        (vec![input.as_str()], date),
+        (vec![dated_fst.as_str()], date),
+        (vec![input.as_str(), undated.as_str()], date),
+        (vec![undated.as_str(), input.as_str()], ""),
+        (vec![undated.as_str()], ""),
+    ] {
+        let mut args = sources;
+        args.extend(["-o", &out]);
+        success(cat(&args));
+        let reader =
+            fst_reader::FstReader::open(std::io::BufReader::new(fs::File::open(&out).unwrap()))
+                .unwrap();
+        assert_eq!(reader.get_header().date, expected);
+    }
+    // Different recording dates do not affect waveform comparison.
+    success(cat(&[&input, "--no-date", "-o", &out]));
+    success(diff(&[&dated_fst, &out]));
+}
