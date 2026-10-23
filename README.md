@@ -160,6 +160,7 @@ they are included in their respective sets.
 | `-f, --filter <PATTERN>` | Filter signals by glob pattern; may be repeated or space-separated |
 | `--ignore-missing` | Ignore signals that are missing from either input |
 | `--ignore-xz` | Ignore value differences only for bits where either side is X or Z |
+| `--fst-diff <FILE>` | Write an FST containing side-by-side values for signals that had value differences |
 
 ### Exit codes
 
@@ -220,6 +221,21 @@ known bit differs:
 
 ```
 wavediff --ignore-xz golden.fst test.fst
+```
+
+`--ignore-xz` assumes X-like unknown bits come from only one side (e.g. an
+uninitialized golden model). If both sides hold X-like bits, masking would hide
+real discrepancies, so wavediff prints the full diff and then errors:
+
+```
+$ wavediff --ignore-xz golden.fst test.fst
+wavediff --ignore-xz: both sides hold X-like bits; drop --ignore-xz to compare them
+```
+
+Write an FST with side-by-side values for signals that differed:
+
+```
+wavediff --fst-diff diff.fst golden.fst test.fst
 ```
 
 Combine multiple files per side and diff the merged sets:
