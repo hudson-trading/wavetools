@@ -779,7 +779,7 @@ impl<'a> VcdHierarchyBuilder<'a> {
                 }
                 vcd::ScopeItem::Var(var) => {
                     let next_idx = self.id_to_idx.len();
-                    let idx = *self.id_to_idx.entry(var.code).or_insert(next_idx);
+                    let idx = *self.id_to_idx.entry(var.code.clone()).or_insert(next_idx);
                     last_idx = Some(idx);
 
                     let ref_name = if self.options.no_range_space {
