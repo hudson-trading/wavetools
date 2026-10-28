@@ -1,0 +1,81 @@
+name: Performance
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Measured runs per binary and test
+        default: "10"
+      size_mib:
+        description: Generated VCD size in MiB
+        default: "256"
+      baseline_ref:
+        description: Git baseline revision (empty uses HEAD^)
+        default: ""
+      baseline_version:
+        description: Optional published baseline version, or latest (overrides Git baseline)
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust
+      - uses: Swatinem/rust-cache@v2
+      - name: Test harness
+        run: python3 -m unittest discover -s tests/performance -p 'test_*.py'
+      - name: Resolve baseline
+        id: baseline
+        env:
+          BASELINE_VERSION: ${{ inputs.baseline_version }}
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+        run: |
+          args=()
+          if [[ -n "$BASELINE_VERSION" ]]; then
+            args+=(--baseline-version "$BASELINE_VERSION")
+          elif [[ -n "$BASELINE_REF" ]]; then
+            args+=(--baseline-ref "$BASELINE_REF")
+          fi
+          id=$(python3 tests/performance/run.py --print-baseline-id "${args[@]}")
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: target/performance/baselines
+          key: performance-baseline-ubuntu24-${{ runner.arch }}-${{ steps.baseline.outputs.id }}-${{ steps.rust.outputs.cachekey }}-v3
+      - name: Compare release performance
+        env:
+          RUNS: ${{ inputs.runs || '10' }}
+          SIZE_MIB: ${{ inputs.size_mib || '256' }}
+          BASELINE_VERSION: ${{ inputs.baseline_version }}
+          BASELINE_REF: ${{ steps.baseline.outputs.id }}
+        run: |
+          args=(--baseline-ref "$BASELINE_REF")
+          if [[ -n "$BASELINE_VERSION" ]]; then
+            args=(--baseline-version "$BASELINE_REF")
+          fi
+          python3 tests/performance/run.py "${args[@]}" --runs "$RUNS" --size-mib "$SIZE_MIB"
+      - name: Upload measurements and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-results
+          path: |
+            target/performance/results.json
+            target/performance/*.stderr
+          if-no-files-found: ignore
