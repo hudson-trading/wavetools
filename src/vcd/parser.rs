@@ -421,15 +421,35 @@ impl<R: io::BufRead> Parser<R> {
     fn parse_vector(&mut self) -> Result<Command, io::Error> {
         let mut val = Vec::new();
         loop {
-            let b = self.read_byte()?;
-            if whitespace_byte(b) {
-                if val.is_empty() {
-                    continue;
-                } else {
-                    break;
+            let bytes = match self.reader.fill_buf() {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            // Keep whitespace/EOF handling on the common byte reader so delayed
+            // line-number updates and truncated-input diagnostics stay identical.
+            if bytes.is_empty() || whitespace_byte(bytes[0]) {
+                self.read_byte()?;
+                if val.is_empty() { continue; }
+                break;
+            }
+            let length = bytes.iter().position(|&b| whitespace_byte(b)).unwrap_or(bytes.len());
+            val.reserve(length);
+            let mut invalid = None;
+            let mut consumed = length;
+            for (index, &byte) in bytes[..length].iter().enumerate() {
+                match Value::parse(byte) {
+                    Ok(value) => val.push(value),
+                    Err(error) => {
+                        invalid = Some(error);
+                        consumed = index + 1;
+                        break;
+                    }
                 }
             }
-            val.push(Value::parse(b).map_err(|e| self.error(e))?);
+            self.reader.consume(consumed);
+            if self.end_of_line { self.line += 1; }
+            self.end_of_line = false;
+            if let Some(error) = invalid { return Err(self.error(error).into()); }
         }
         let id = self.read_token_parse()?;
         Ok(Command::ChangeVector(id, val.into()))
@@ -1730,6 +1750,36 @@ $enddefinitions $end
                 assert_eq!(a.arg, 42);
             }
             x => panic!("Expected Attribute, found {:?}", x),
+        }
+    }
+}
+
+#[test]
+fn vector_scanning_handles_small_buffers_and_whitespace() {
+    let input = b"b\n 01XZ !\n#10\nb1 \"\n";
+    let expected = vec![
+        Command::ChangeVector(super::IdCode::from(0u32), "01xz".parse().unwrap()),
+        Command::Timestamp(10),
+        Command::ChangeVector(super::IdCode::from(1u32), "1".parse().unwrap()),
+    ];
+    for capacity in 1..=16 {
+        let reader = std::io::BufReader::with_capacity(capacity, input.as_slice());
+        let actual = Parser::new(reader).collect::<io::Result<Vec<_>>>().unwrap();
+        assert_eq!(actual, expected, "buffer capacity {capacity}");
+    }
+}
+
+#[test]
+fn vector_scanning_preserves_invalid_value_lines_and_eof_errors() {
+    for capacity in 1..=16 {
+        let reader = std::io::BufReader::with_capacity(capacity, b"b\n01Q !\n".as_slice());
+        let error = Parser::new(reader).next().unwrap().unwrap_err();
+        let error = error.get_ref().unwrap().downcast_ref::<ParseError>().unwrap();
+        assert_eq!(error.line(), 2, "buffer capacity {capacity}");
+        for truncated in [b"b01".as_slice(), b"b\n", b"b01 "] {
+            let reader = std::io::BufReader::with_capacity(capacity, truncated);
+            let error = Parser::new(reader).next().unwrap().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
         }
     }
 }
