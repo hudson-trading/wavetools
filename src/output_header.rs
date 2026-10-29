@@ -209,6 +209,64 @@ fn walk_vcd(
     Ok(())
 }
 
+/// Visit local handle IDs without retaining a second copy of the source header.
+fn visit_commands(
+    reader: &mut WaveReader,
+    emit: &mut impl FnMut(vcd::Command) -> io::Result<()>,
+) -> io::Result<()> {
+    match reader {
+        WaveReader::Vcd(r) => walk_vcd(&r.header.items, &mut |mut command| {
+            if let vcd::Command::VarDef(_, _, code, _, _) = &mut command {
+                *code = (r.id_to_idx[code] as u64).into();
+            }
+            emit(command)
+        }),
+        WaveReader::Fst(r) => {
+            let mut result = Ok(());
+            r.read_hierarchy(|entry| {
+                if result.is_ok() {
+                    result = fst_command(entry).and_then(&mut *emit);
+                }
+            })
+            .map_err(error)?;
+            result
+        }
+    }
+}
+
+/// Only annotations/comments need lookahead: a following scope determines
+/// whether packing attributes belong to that scope or the preceding variable.
+fn visit_annotated(
+    reader: &mut WaveReader,
+    mut emit: impl FnMut(vcd::Command, bool) -> io::Result<()>,
+) -> io::Result<()> {
+    use vcd::{AttributeType, Command::*};
+    let mut pending = Vec::new();
+    visit_commands(reader, &mut |command| {
+        if matches!(command, AttributeBegin(..) | Comment(_)) {
+            pending.push(command);
+            return Ok(());
+        }
+        let next_is_scope = matches!(command, ScopeDef(..));
+        for attribute in pending.drain(..) {
+            let scope_attribute = next_is_scope
+                && matches!(
+                    attribute,
+                    AttributeBegin(
+                        AttributeType::Pack | AttributeType::Array | AttributeType::Enum,
+                        ..
+                    )
+                );
+            emit(attribute, scope_attribute)?;
+        }
+        emit(command, false)
+    })?;
+    for command in pending {
+        emit(command, false)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn write_header<W: io::Write>(
     writer: &mut vcd::Writer<W>,
     readers: &mut [WaveReader],
@@ -219,151 +277,125 @@ pub(crate) fn write_header<W: io::Write>(
     // Enum and source-path ids are local to each input; remap them for overlays.
     let mut enum_ids = HashMap::new();
     let mut path_ids = HashMap::new();
-    // Independent definitions must precede declarations: otherwise a later
-    // input's preamble can become attributes of an earlier top-level variable.
-    let mut preamble = Vec::new();
-    let mut commands = Vec::new();
-    let overlay = readers.len() > 1;
-    for (file, (reader, &offset)) in readers.iter_mut().zip(offsets).enumerate() {
-        let vcd_ids = match reader {
-            WaveReader::Vcd(r) => Some(r.id_to_idx.clone()),
-            WaveReader::Fst(_) => None,
-        };
-        let mut source = Vec::new();
-        match reader {
-            WaveReader::Vcd(r) => walk_vcd(&r.header.items, &mut |command| {
-                source.push(command);
-                Ok(())
-            })?,
+    fn variable_count(items: &[vcd::ScopeItem]) -> usize {
+        items
+            .iter()
+            .map(|item| match item {
+                vcd::ScopeItem::Var(_) => 1,
+                vcd::ScopeItem::Scope(scope) => variable_count(&scope.items),
+                _ => 0,
+            })
+            .sum()
+    }
+    let definitions_needed = readers.len() != 1
+        || match &readers[0] {
             WaveReader::Fst(r) => {
-                let mut result = Ok(());
-                r.read_hierarchy(|entry| {
-                    if result.is_ok() {
-                        result = fst_command(entry).map(|command| source.push(command));
-                    }
-                })
-                .map_err(error)?;
-                result?;
+                r.get_header().var_count as usize
+                    != selected.values().map(|info| info.vars.len()).sum::<usize>()
             }
-        }
-        // Packing and array annotations can precede a scope rather than
-        // describe the preceding variable. Look past other attributes/comments
-        // to the next declaration, without crossing an upscope or attrend.
-        let mut next_is_scope = false;
-        let mut scope_attributes = vec![false; source.len()];
-        for (i, command) in source.iter().enumerate().rev() {
-            use vcd::{AttributeType, Command::*};
-            match command {
-                ScopeDef(..) => next_is_scope = true,
-                AttributeBegin(kind, ..) => {
-                    scope_attributes[i] = next_is_scope
-                        && matches!(
-                            kind,
-                            AttributeType::Pack | AttributeType::Array | AttributeType::Enum
-                        );
-                }
-                Comment(_) => {}
-                _ => next_is_scope = false,
+            WaveReader::Vcd(r) => {
+                variable_count(&r.header.items)
+                    != selected.values().map(|info| info.vars.len()).sum::<usize>()
             }
+        };
+    // Shared definitions must precede declarations. The first pass emits only
+    // those definitions; the second streams the remaining commands. ID maps are
+    // populated in source order on the first pass and reused on the second.
+    for definitions_only in [true, false] {
+        if definitions_only && !definitions_needed {
+            continue;
         }
-        let mut scopes = Vec::new();
-        let mut in_preamble = true;
-        // Variable attributes follow their declaration; scope annotations and
-        // shared definitions must survive removal of the preceding variable.
-        let mut selected_variable = None;
-        let mut emit = |mut command: vcd::Command, scope_attribute: bool| -> io::Result<()> {
-            use vcd::Command::*;
-            let definition = matches!(&command,
+        let overlay = readers.len() > 1;
+        for (file, (reader, &offset)) in readers.iter_mut().zip(offsets).enumerate() {
+            let mut scopes = Vec::new();
+            let mut in_preamble = true;
+            // Variable attributes follow their declaration; scope annotations and
+            // shared definitions must survive removal of the preceding variable.
+            let mut selected_variable = None;
+            let mut emit = |mut command: vcd::Command, scope_attribute: bool| -> io::Result<()> {
+                use vcd::Command::*;
+                let definition = matches!(&command,
                 AttributeBegin(vcd::AttributeType::Misc, subtype, name, _)
                 if subtype == MiscAttributeSubtype::PathName.to_hex()
                     || (subtype == MiscAttributeSubtype::EnumTable.to_hex() && !name.trim_matches('"').is_empty()));
-            let attribute = matches!(&command, AttributeBegin(..) | AttributeEnd);
-            let hoist = (overlay && in_preamble && attribute)
-                || (definition && selected_variable == Some(false));
-            if attribute && selected_variable == Some(false) && !hoist && !scope_attribute {
-                return Ok(());
-            }
-            match &mut command {
-                ScopeDef(_, name) => {
-                    scopes.push(name.clone());
-                    selected_variable = None;
-                    in_preamble = false;
+                let attribute = matches!(&command, AttributeBegin(..) | AttributeEnd);
+                let hoist = (overlay && in_preamble && attribute)
+                    || (definition && selected_variable == Some(false));
+                if attribute && selected_variable == Some(false) && !hoist && !scope_attribute {
+                    return Ok(());
                 }
-                Upscope => {
-                    scopes.pop();
-                    selected_variable = None;
-                }
-                VarDef(_, _, code, name, index) => {
-                    in_preamble = false;
-                    let local = vcd_ids
-                        .as_ref()
-                        .map_or_else(|| u64::from(*code) as usize, |ids| ids[code]);
-                    let handle = offset + local;
-                    let mut path = scopes.clone();
-                    path.push(format!(
-                        "{}{}",
-                        name.replace(" [", "["),
-                        index.map(|i| i.to_string()).unwrap_or_default()
-                    ));
-                    let var = selected.get(&handle).and_then(|info| {
-                        info.vars.iter().find(|var| {
-                            let mut candidate = hierarchy.names.segments(var.name);
-                            let name = candidate.pop().unwrap();
-                            candidate
-                                .iter()
-                                .copied()
-                                .eq(path[..path.len() - 1].iter().map(String::as_str))
-                                && name.replace(" [", "[") == *path.last().unwrap()
-                        })
-                    });
-                    selected_variable = Some(var.is_some());
-                    let Some(var) = var else { return Ok(()) };
-                    *code = (handle as u64).into();
-                    *name = hierarchy
-                        .names
-                        .segments(var.name)
-                        .last()
-                        .unwrap()
-                        .to_string();
-                    *index = None;
-                }
-                AttributeBegin(vcd::AttributeType::Misc, subtype, name, arg) => {
-                    let subtype = MiscAttributeSubtype::from_hex(subtype).ok();
-                    let ids = match subtype {
-                        Some(MiscAttributeSubtype::EnumTable) => Some(&mut enum_ids),
-                        Some(MiscAttributeSubtype::PathName) => Some(&mut path_ids),
-                        _ => None,
-                    };
-                    if let Some(ids) = ids {
-                        let next = ids.len() as i64 + 1;
-                        *arg = *ids.entry((file, *arg)).or_insert(next);
-                    } else if matches!(
-                        subtype,
-                        Some(
-                            MiscAttributeSubtype::SourceStem
-                                | MiscAttributeSubtype::SourceInstantiationStem
-                        )
-                    ) {
-                        let old = name.parse::<i64>().map_err(error)?;
-                        let next = path_ids.len() as i64 + 1;
-                        *name = path_ids.entry((file, old)).or_insert(next).to_string();
+                match &mut command {
+                    ScopeDef(_, name) => {
+                        scopes.push(name.clone());
+                        selected_variable = None;
+                        in_preamble = false;
                     }
+                    Upscope => {
+                        scopes.pop();
+                        selected_variable = None;
+                    }
+                    VarDef(_, _, code, name, index) => {
+                        in_preamble = false;
+                        let local = u64::from(*code) as usize;
+                        let handle = offset + local;
+                        let mut path = scopes.clone();
+                        path.push(format!(
+                            "{}{}",
+                            name.replace(" [", "["),
+                            index.map(|i| i.to_string()).unwrap_or_default()
+                        ));
+                        let var = selected.get(&handle).and_then(|info| {
+                            info.vars.iter().find(|var| {
+                                let mut candidate = hierarchy.names.segments(var.name);
+                                let name = candidate.pop().unwrap();
+                                candidate
+                                    .iter()
+                                    .copied()
+                                    .eq(path[..path.len() - 1].iter().map(String::as_str))
+                                    && name.replace(" [", "[") == *path.last().unwrap()
+                            })
+                        });
+                        selected_variable = Some(var.is_some());
+                        let Some(var) = var else { return Ok(()) };
+                        *code = (handle as u64).into();
+                        let segments = hierarchy.names.segments(var.name);
+                        let output_name = *segments.last().unwrap();
+                        if name != output_name {
+                            *name = output_name.to_string();
+                        }
+                        *index = None;
+                    }
+                    AttributeBegin(vcd::AttributeType::Misc, subtype, name, arg) => {
+                        let subtype = MiscAttributeSubtype::from_hex(subtype).ok();
+                        let ids = match subtype {
+                            Some(MiscAttributeSubtype::EnumTable) => Some(&mut enum_ids),
+                            Some(MiscAttributeSubtype::PathName) => Some(&mut path_ids),
+                            _ => None,
+                        };
+                        if let Some(ids) = ids {
+                            let next = ids.len() as i64 + 1;
+                            *arg = *ids.entry((file, *arg)).or_insert(next);
+                        } else if matches!(
+                            subtype,
+                            Some(
+                                MiscAttributeSubtype::SourceStem
+                                    | MiscAttributeSubtype::SourceInstantiationStem
+                            )
+                        ) {
+                            let old = name.parse::<i64>().map_err(error)?;
+                            let next = path_ids.len() as i64 + 1;
+                            *name = path_ids.entry((file, old)).or_insert(next).to_string();
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-            if hoist {
-                preamble.push(command);
-            } else {
-                commands.push(command);
-            }
-            Ok(())
-        };
-        for (command, scope_attribute) in source.into_iter().zip(scope_attributes) {
-            emit(command, scope_attribute)?;
+                if hoist == definitions_only {
+                    writer.command(&command)?;
+                }
+                Ok(())
+            };
+            visit_annotated(reader, &mut emit)?;
         }
-    }
-    for command in preamble.iter().chain(&commands) {
-        writer.command(command)?;
     }
     writer.enddefinitions()
 }
