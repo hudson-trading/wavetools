@@ -38,9 +38,9 @@ pub type NameId = u32;
 /// A single node in the hierarchical name tree.
 #[derive(Debug)]
 struct NameNode {
-    segment: String,
+    segment: std::sync::Arc<str>,
     parent: Option<NameId>,
-    children: HashMap<String, NameId>,
+    children: HashMap<std::sync::Arc<str>, NameId>,
 }
 
 /// Returns true if `s` is a valid SystemVerilog simple identifier.
@@ -121,7 +121,7 @@ impl NameTree {
     pub fn new() -> Self {
         NameTree {
             nodes: vec![NameNode {
-                segment: String::new(),
+                segment: "".into(),
                 parent: None,
                 children: HashMap::new(),
             }],
@@ -140,15 +140,23 @@ impl NameTree {
             return id;
         }
         let id = self.nodes.len() as NameId;
+        // The node and its parent's lookup table share the same segment text.
+        let segment: std::sync::Arc<str> = segment.into();
         self.nodes.push(NameNode {
-            segment: segment.to_string(),
+            segment: segment.clone(),
             parent: Some(parent),
             children: HashMap::new(),
         });
-        self.nodes[parent as usize]
-            .children
-            .insert(segment.to_string(), id);
+        self.nodes[parent as usize].children.insert(segment, id);
         id
+    }
+
+    pub(crate) fn child(&self, parent: NameId, segment: &str) -> Option<NameId> {
+        self.nodes[parent as usize].children.get(segment).copied()
+    }
+
+    pub(crate) fn segment(&self, id: NameId) -> &str {
+        &self.nodes[id as usize].segment
     }
 
     /// Collect path segments from root to `leaf` (excluding the root).
@@ -156,7 +164,7 @@ impl NameTree {
         let mut parts = Vec::new();
         let mut cur = leaf;
         while let Some(parent) = self.nodes[cur as usize].parent {
-            parts.push(self.nodes[cur as usize].segment.as_str());
+            parts.push(self.nodes[cur as usize].segment.as_ref());
             cur = parent;
         }
         parts.reverse();

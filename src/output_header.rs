@@ -273,7 +273,11 @@ pub(crate) fn write_header<W: io::Write>(
     offsets: &[usize],
     hierarchy: &WaveHierarchy,
 ) -> io::Result<()> {
-    let selected = &hierarchy.signal_map;
+    let selected: HashMap<_, _> = hierarchy
+        .signal_map
+        .iter()
+        .flat_map(|(&handle, info)| info.vars.iter().map(move |var| ((handle, var.name), var)))
+        .collect();
     // Enum and source-path ids are local to each input; remap them for overlays.
     let mut enum_ids = HashMap::new();
     let mut path_ids = HashMap::new();
@@ -289,14 +293,8 @@ pub(crate) fn write_header<W: io::Write>(
     }
     let definitions_needed = readers.len() != 1
         || match &readers[0] {
-            WaveReader::Fst(r) => {
-                r.get_header().var_count as usize
-                    != selected.values().map(|info| info.vars.len()).sum::<usize>()
-            }
-            WaveReader::Vcd(r) => {
-                variable_count(&r.header.items)
-                    != selected.values().map(|info| info.vars.len()).sum::<usize>()
-            }
+            WaveReader::Fst(r) => r.get_header().var_count as usize != selected.len(),
+            WaveReader::Vcd(r) => variable_count(&r.header.items) != selected.len(),
         };
     // Shared definitions must precede declarations. The first pass emits only
     // those definitions; the second streams the remaining commands. ID maps are
@@ -307,7 +305,7 @@ pub(crate) fn write_header<W: io::Write>(
         }
         let overlay = readers.len() > 1;
         for (file, (reader, &offset)) in readers.iter_mut().zip(offsets).enumerate() {
-            let mut scopes = Vec::new();
+            let mut scopes = vec![Some(hierarchy.names.root())];
             let mut in_preamble = true;
             // Variable attributes follow their declaration; scope annotations and
             // shared definitions must survive removal of the preceding variable.
@@ -326,7 +324,12 @@ pub(crate) fn write_header<W: io::Write>(
                 }
                 match &mut command {
                     ScopeDef(_, name) => {
-                        scopes.push(name.clone());
+                        let scope = scopes
+                            .last()
+                            .copied()
+                            .flatten()
+                            .and_then(|parent| hierarchy.names.child(parent, name));
+                        scopes.push(scope);
                         selected_variable = None;
                         in_preamble = false;
                     }
@@ -338,28 +341,20 @@ pub(crate) fn write_header<W: io::Write>(
                         in_preamble = false;
                         let local = u64::from(*code) as usize;
                         let handle = offset + local;
-                        let mut path = scopes.clone();
-                        path.push(format!(
-                            "{}{}",
-                            name.replace(" [", "["),
-                            index.map(|i| i.to_string()).unwrap_or_default()
-                        ));
-                        let var = selected.get(&handle).and_then(|info| {
-                            info.vars.iter().find(|var| {
-                                let mut candidate = hierarchy.names.segments(var.name);
-                                let name = candidate.pop().unwrap();
-                                candidate
-                                    .iter()
-                                    .copied()
-                                    .eq(path[..path.len() - 1].iter().map(String::as_str))
-                                    && name.replace(" [", "[") == *path.last().unwrap()
-                            })
+                        let reference = match index {
+                            Some(index) => std::borrow::Cow::Owned(format!("{name} {index}")),
+                            None => std::borrow::Cow::Borrowed(name.as_str()),
+                        };
+                        let var = scopes.last().copied().flatten().and_then(|parent| {
+                            let id = hierarchy.names.child(parent, &reference).or_else(|| {
+                                hierarchy.names.child(parent, &reference.replace(" [", "["))
+                            })?;
+                            selected.get(&(handle, id))
                         });
                         selected_variable = Some(var.is_some());
                         let Some(var) = var else { return Ok(()) };
                         *code = (handle as u64).into();
-                        let segments = hierarchy.names.segments(var.name);
-                        let output_name = *segments.last().unwrap();
+                        let output_name = hierarchy.names.segment(var.name);
                         if name != output_name {
                             *name = output_name.to_string();
                         }
