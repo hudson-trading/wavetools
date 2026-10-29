@@ -1062,6 +1062,10 @@ pub fn open_wave_files(
         hierarchies.push(hier);
     }
 
+    if hierarchies.len() == 1 {
+        return Ok((readers, hierarchies.pop().unwrap(), vec![0]));
+    }
+
     let maps_with_paths: Vec<(&SignalMap, &NameTree, &str)> = hierarchies
         .iter()
         .zip(paths.iter())

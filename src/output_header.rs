@@ -215,23 +215,7 @@ pub(crate) fn write_header<W: io::Write>(
     offsets: &[usize],
     hierarchy: &WaveHierarchy,
 ) -> io::Result<()> {
-    let selected: HashMap<_, _> = hierarchy
-        .signal_map
-        .iter()
-        .flat_map(|(&handle, info)| {
-            info.vars.iter().map(move |var| {
-                let mut path: Vec<_> = hierarchy
-                    .names
-                    .segments(var.name)
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect();
-                let name = path.last_mut().unwrap();
-                *name = name.replace(" [", "[");
-                ((handle, path), var)
-            })
-        })
-        .collect();
+    let selected = &hierarchy.signal_map;
     // Enum and source-path ids are local to each input; remap them for overlays.
     let mut enum_ids = HashMap::new();
     let mut path_ids = HashMap::new();
@@ -321,7 +305,17 @@ pub(crate) fn write_header<W: io::Write>(
                         name.replace(" [", "["),
                         index.map(|i| i.to_string()).unwrap_or_default()
                     ));
-                    let var = selected.get(&(handle, path));
+                    let var = selected.get(&handle).and_then(|info| {
+                        info.vars.iter().find(|var| {
+                            let mut candidate = hierarchy.names.segments(var.name);
+                            let name = candidate.pop().unwrap();
+                            candidate
+                                .iter()
+                                .copied()
+                                .eq(path[..path.len() - 1].iter().map(String::as_str))
+                                && name.replace(" [", "[") == *path.last().unwrap()
+                        })
+                    });
                     selected_variable = Some(var.is_some());
                     let Some(var) = var else { return Ok(()) };
                     *code = (handle as u64).into();
