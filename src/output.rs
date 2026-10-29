@@ -16,6 +16,7 @@ const FST_FLUSH_THRESHOLD_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_TIMESCALE_EXPONENT: i8 = -9;
 
 type VcdWriter = vcd::Writer<BufWriter<File>>;
+const VCD_OUTPUT_BUFFER_BYTES: usize = 2 * 1024 * 1024;
 type FstWriter = FstBodyWriter<BufWriter<File>>;
 
 fn err(e: impl std::fmt::Display) -> io::Error {
@@ -100,9 +101,132 @@ fn direction(d: &str) -> FstVarDirection {
     }
 }
 
+/// Values remain borrowed during direct FST conversion. Only the initial state
+/// needed for a time slice owns a copy; real values stay binary until written.
+enum OutputValue<'a> {
+    Bytes(std::borrow::Cow<'a, [u8]>),
+    Real(f64),
+}
+
+impl OutputValue<'_> {
+    fn into_owned(self) -> OutputValue<'static> {
+        match self {
+            Self::Bytes(value) => OutputValue::Bytes(value.into_owned().into()),
+            Self::Real(value) => OutputValue::Real(value),
+        }
+    }
+}
+
+fn visit_changes(
+    mut readers: Vec<WaveReader>,
+    offsets: &[usize],
+    hierarchy: &WaveHierarchy,
+    end: Option<u64>,
+    mut emit: impl FnMut(u64, Option<usize>, OutputValue<'_>) -> io::Result<()>,
+) -> io::Result<()> {
+    if readers.len() != 1 {
+        let include = hierarchy.signal_map.keys().copied().collect();
+        return merge_changes(readers, offsets, 0, end, Some(&include), |change| {
+            emit(
+                change.time,
+                change.handle,
+                OutputValue::Bytes(change.value.into_bytes().into()),
+            )
+        });
+    }
+    let offset = offsets[0];
+    let final_time = match readers.pop().unwrap() {
+        WaveReader::Fst(mut reader) => {
+            let header = reader.get_header();
+            let include = (hierarchy.signal_map.len() != header.max_handle as usize).then(|| {
+                hierarchy
+                    .signal_map
+                    .keys()
+                    .filter_map(|handle| handle.checked_sub(offset))
+                    .map(fst_reader::FstSignalHandle::from_index)
+                    .collect()
+            });
+            let filter = fst_reader::FstFilter {
+                start: 0,
+                end,
+                include,
+            };
+            let mut result = Ok(());
+            reader
+                .read_signals(&filter, |time, handle, value| {
+                    if result.is_ok() && end.is_none_or(|last| time <= last) {
+                        let value = match value {
+                            fst_reader::FstSignalValue::String(bytes) => {
+                                OutputValue::Bytes(bytes.into())
+                            }
+                            fst_reader::FstSignalValue::Real(value) => OutputValue::Real(value),
+                        };
+                        result = emit(time, Some(handle.get_index() + offset), value);
+                    }
+                })
+                .map_err(err)?;
+            result?;
+            header.end_time
+        }
+        WaveReader::Vcd(mut reader) => {
+            let all_signals = hierarchy.signal_map.len() == reader.id_to_idx.len();
+            for command in reader.parser.by_ref() {
+                let command = command?;
+                let id = match &command {
+                    vcd::Command::Timestamp(time) => {
+                        reader.current_time = *time;
+                        if end.is_some_and(|last| *time > last) {
+                            break;
+                        }
+                        continue;
+                    }
+                    vcd::Command::ChangeScalar(id, _)
+                    | vcd::Command::ChangeVector(id, _)
+                    | vcd::Command::ChangeReal(id, _)
+                    | vcd::Command::ChangeString(id, _) => id,
+                    _ => continue,
+                };
+                let Some(local) = reader.id_to_idx.get(id) else {
+                    continue;
+                };
+                let handle = *local + offset;
+                if !all_signals && !hierarchy.signal_map.contains_key(&handle) {
+                    continue;
+                }
+                let scalar;
+                let value = match command {
+                    vcd::Command::ChangeScalar(_, value) => {
+                        scalar = [crate::vcd_value_char(value) as u8];
+                        OutputValue::Bytes(scalar.as_slice().into())
+                    }
+                    vcd::Command::ChangeVector(_, vector) => {
+                        let bytes: Vec<u8> = Vec::<vcd::Value>::from(vector)
+                            .into_iter()
+                            .map(|value| crate::vcd_value_char(value) as u8)
+                            .collect();
+                        OutputValue::Bytes(bytes.into())
+                    }
+                    vcd::Command::ChangeReal(_, value) => OutputValue::Real(value),
+                    vcd::Command::ChangeString(_, value) => {
+                        OutputValue::Bytes(value.into_bytes().into())
+                    }
+                    _ => unreachable!(),
+                };
+                emit(reader.current_time, Some(handle), value)?;
+            }
+            reader.current_time
+        }
+    };
+    emit(
+        end.map_or(final_time, |last| final_time.min(last)),
+        None,
+        OutputValue::Bytes((&[][..]).into()),
+    )
+}
+
 enum Body {
     Vcd(VcdWriter),
-    Fst(Box<FstWriter>, HashMap<usize, FstSignalId>),
+    Fst(Box<FstWriter>, HashMap<usize, FstSignalId>, Vec<u8>),
 }
 impl Body {
     fn begin_dumpvars(&mut self) -> io::Result<()> {
@@ -122,7 +246,7 @@ impl Body {
     fn time(&mut self, time: u64) -> io::Result<()> {
         match self {
             Self::Vcd(w) => w.timestamp(time),
-            Self::Fst(w, _) => {
+            Self::Fst(w, _, _) => {
                 // fst-writer requires flushes to occur immediately before advancing time.
                 if w.size() > FST_FLUSH_THRESHOLD_BYTES {
                     w.flush().map_err(err)?;
@@ -131,14 +255,33 @@ impl Body {
             }
         }
     }
-    fn change(&mut self, handle: usize, value: &str, var: &VarEntry) -> io::Result<()> {
+    fn change(&mut self, handle: usize, value: OutputValue<'_>, var: &VarEntry) -> io::Result<()> {
+        if let OutputValue::Real(value) = value {
+            return match self {
+                Self::Vcd(w) if is_real(var.meta.var_type) => {
+                    w.change_real((handle as u64).into(), value)
+                }
+                _ => Err(err("Real value on an unsupported signal type")),
+            };
+        }
+        let OutputValue::Bytes(value) = value else {
+            unreachable!()
+        };
+        let value = value.as_ref();
         match self {
             Self::Vcd(w) => {
                 let id = vcd::IdCode::from(handle as u64);
                 if is_real(var.meta.var_type) {
-                    return w.change_real(id, value.parse::<f64>().map_err(err)?);
+                    return w.change_real(
+                        id,
+                        std::str::from_utf8(value)
+                            .map_err(err)?
+                            .parse::<f64>()
+                            .map_err(err)?,
+                    );
                 }
                 if var.meta.var_type == "string" {
+                    let value = std::str::from_utf8(value).map_err(err)?;
                     if value.is_empty() || value.chars().any(char::is_whitespace) {
                         return Err(err(
                             "VCD strings must be nonempty and contain no whitespace",
@@ -146,54 +289,53 @@ impl Body {
                     }
                     return w.change_string(id, value);
                 }
-                let bits = value
-                    .bytes()
-                    .map(|c| match c {
-                        b'0' => Ok(vcd::Value::V0),
-                        b'1' => Ok(vcd::Value::V1),
-                        b'x' | b'X' => Ok(vcd::Value::X),
-                        b'z' | b'Z' => Ok(vcd::Value::Z),
-                        _ => Err(err("Invalid four-state signal value")),
-                    })
-                    .collect::<io::Result<Vec<_>>>()?;
-                if bits.is_empty() || bits.len() > var.meta.size as usize {
+                if value.is_empty() || value.len() > var.meta.size as usize {
                     return Err(err("Invalid bit-vector width"));
                 }
                 if var.meta.size == 1 {
-                    w.change_scalar(id, bits[0])
+                    let bit = match value[0] {
+                        b'0' => vcd::Value::V0,
+                        b'1' => vcd::Value::V1,
+                        b'x' | b'X' => vcd::Value::X,
+                        b'z' | b'Z' => vcd::Value::Z,
+                        _ => return Err(err("Invalid four-state signal value")),
+                    };
+                    w.change_scalar(id, bit)
                 } else {
-                    w.change_vector(id, bits)
+                    w.change_vector_bytes(id, value)
                 }
             }
-            Self::Fst(w, ids) => {
-                let value = value.to_ascii_lowercase();
+            Self::Fst(w, ids, scratch) => {
                 if value.is_empty()
                     || value.len() > var.meta.size as usize
                     || !value
-                        .bytes()
-                        .all(|c| matches!(c, b'0' | b'1' | b'x' | b'z'))
+                        .iter()
+                        .all(|c| matches!(c, b'0' | b'1' | b'x' | b'z' | b'X' | b'Z'))
                 {
                     return Err(err("Invalid four-state signal value or width"));
                 }
-                // VCD permits shortened vectors: zero extend 0/1, sign extend x/z.
-                let fill = match value.as_bytes()[0] {
-                    b'x' => 'x',
-                    b'z' => 'z',
-                    _ => '0',
+                if value.len() == var.meta.size as usize
+                    && !value.iter().any(u8::is_ascii_uppercase)
+                {
+                    return w.signal_change(ids[&handle], value).map_err(err);
+                }
+                // Short VCD vectors extend 0/1 with zero, and x/z with that state.
+                let fill = match value[0].to_ascii_lowercase() {
+                    b'x' => b'x',
+                    b'z' => b'z',
+                    _ => b'0',
                 };
-                let mut padded = fill
-                    .to_string()
-                    .repeat(var.meta.size as usize - value.len());
-                padded.push_str(&value);
-                w.signal_change(ids[&handle], padded.as_bytes())
-                    .map_err(err)
+                scratch.clear();
+                scratch.resize(var.meta.size as usize - value.len(), fill);
+                scratch.extend(value.iter().map(u8::to_ascii_lowercase));
+                w.signal_change(ids[&handle], scratch).map_err(err)
             }
         }
     }
     fn finish(self) -> io::Result<()> {
         match self {
             Self::Vcd(mut w) => w.flush(),
-            Self::Fst(w, _) => w.finish().map_err(err),
+            Self::Fst(w, _, _) => w.finish().map(|_| ()).map_err(err),
         }
     }
 }
@@ -253,7 +395,10 @@ pub fn write_wave_file(
     let mut body = match format {
         WaveFormat::Vcd => {
             let (factor, unit) = vcd_timescale(exponent)?;
-            let mut writer = vcd::Writer::new(BufWriter::new(File::create(path)?));
+            let mut writer = vcd::Writer::new(BufWriter::with_capacity(
+                VCD_OUTPUT_BUFFER_BYTES,
+                File::create(path)?,
+            ));
             if let Some(date) = date.as_deref() {
                 writer.date(date)?;
             }
@@ -268,55 +413,73 @@ pub fn write_wave_file(
             create_fst_body(path, exponent, hierarchy, date.as_deref().unwrap_or(""))?
         }
     };
+    // Most readers use dense handles. Avoid per-change hashing in that case,
+    // without allocating a huge table when a filter selects sparse handles.
+    let dense = hierarchy
+        .signal_map
+        .keys()
+        .max()
+        .copied()
+        .filter(|&last| last < hierarchy.signal_map.len().saturating_mul(2))
+        .map(|last| {
+            let mut vars = vec![None; last + 1];
+            for (&handle, info) in &hierarchy.signal_map {
+                vars[handle] = info.vars.first();
+            }
+            vars
+        });
+    let signal = |handle: usize| match &dense {
+        Some(vars) => vars.get(handle).copied().flatten(),
+        None => hierarchy
+            .signal_map
+            .get(&handle)
+            .and_then(|info| info.vars.first()),
+    };
     let mut initial = HashMap::new();
     let mut current = None;
     let mut initial_open = false;
     let mut final_time = start;
-    merge_changes(readers, offsets, 0, end, |change| {
-        final_time = final_time.max(change.time);
-        let Some(handle) = change.handle else {
+    visit_changes(readers, offsets, hierarchy, end, |time, handle, value| {
+        final_time = final_time.max(time);
+        let Some(handle) = handle else {
             return Ok(());
         };
-        let Some(info) = hierarchy.signal_map.get(&handle) else {
+        let Some(var) = signal(handle) else {
             return Ok(());
         };
-        if change.time < start {
-            initial.insert(handle, change.value);
+        if time < start {
+            initial.insert(handle, value.into_owned());
             return Ok(());
         }
         if current.is_none() {
-            let first_time = if initial.is_empty() {
-                change.time
-            } else {
-                start
-            };
+            let first_time = if initial.is_empty() { time } else { start };
             body.time(first_time)?;
             body.begin_dumpvars()?;
             initial_open = true;
             for (handle, value) in initial.drain() {
-                body.change(handle, &value, &hierarchy.signal_map[&handle].vars[0])?;
+                body.change(handle, value, signal(handle).unwrap())?;
             }
             current = Some(first_time);
         }
-        if current.is_some_and(|previous| change.time < previous) {
+        if current.is_some_and(|previous| time < previous) {
             return Err(err("Waveform timestamps must not decrease"));
         }
-        if current != Some(change.time) {
+        if current != Some(time) {
             if initial_open {
                 body.end_dumpvars()?;
                 initial_open = false;
             }
-            body.time(change.time)?;
-            current = Some(change.time);
+            body.time(time)?;
+            current = Some(time);
         }
-        body.change(handle, &change.value, &info.vars[0])
+        body.change(handle, value, var)
     })?;
     if current.is_none() {
         body.time(start)?;
         body.begin_dumpvars()?;
         initial_open = true;
         for (handle, value) in initial {
-            body.change(handle, &value, &hierarchy.signal_map[&handle].vars[0])?;
+            body.change(handle, value, signal(handle).unwrap())?;
         }
     }
     if initial_open {
@@ -402,5 +565,9 @@ fn create_fst_body(
     for _ in scopes {
         writer.up_scope().map_err(err)?;
     }
-    Ok(Body::Fst(Box::new(writer.finish().map_err(err)?), ids))
+    Ok(Body::Fst(
+        Box::new(writer.finish().map_err(err)?),
+        ids,
+        Vec::new(),
+    ))
 }

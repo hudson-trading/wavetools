@@ -179,13 +179,20 @@ fn send_cat_changes(
     start: u64,
     end: Option<u64>,
     tx: channel::Sender<CatChange>,
+    include: Option<std::collections::HashSet<usize>>,
 ) -> io::Result<()> {
     match &mut reader {
         WaveReader::Fst(fst_reader) => {
             let filter = FstFilter {
                 start,
                 end,
-                include: None,
+                include: include.as_ref().map(|handles| {
+                    handles
+                        .iter()
+                        .copied()
+                        .map(fst_reader::FstSignalHandle::from_index)
+                        .collect()
+                }),
             };
             let read_result = fst_reader.read_signals(&filter, |time, handle, value| {
                 if time < filter.start {
@@ -219,6 +226,12 @@ fn send_cat_changes(
                     if time > e {
                         break;
                     }
+                }
+                if include
+                    .as_ref()
+                    .is_some_and(|handles| !handles.contains(&handle_idx))
+                {
+                    continue;
                 }
                 if tx
                     .send(CatChange {
@@ -273,7 +286,8 @@ pub fn write_signals_wave_multi<W: Write>(
     let mut current_time: Option<u64> = None;
     let mut batch: Vec<(String, String)> = Vec::new();
 
-    merge_changes(readers, offsets, start, end, |change| {
+    let include = handle_to_names.keys().copied().collect();
+    merge_changes(readers, offsets, start, end, Some(&include), |change| {
         if options.sort {
             if let Some(prev_time) = current_time {
                 if prev_time != change.time {
@@ -361,6 +375,7 @@ pub(crate) fn merge_changes(
     offsets: &[usize],
     start: u64,
     end: Option<u64>,
+    include: Option<&std::collections::HashSet<usize>>,
     on_change: impl FnMut(CatChange) -> io::Result<()>,
 ) -> io::Result<()> {
     // Spawn a thread per reader, each sending CatChanges to its own channel.
@@ -370,9 +385,22 @@ pub(crate) fn merge_changes(
     let mut threads = Vec::new();
 
     for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
+        let count = match &reader {
+            WaveReader::Fst(r) => r.get_header().max_handle as usize,
+            WaveReader::Vcd(r) => r.id_to_idx.len(),
+        };
+        let selected = include.and_then(|handles| {
+            let local: std::collections::HashSet<_> = handles
+                .iter()
+                .copied()
+                .filter(|handle| (offset..offset + count).contains(handle))
+                .map(|handle| handle - offset)
+                .collect();
+            (local.len() != count).then_some(local)
+        });
         let (tx, rx) = channel::bounded(CHANNEL_BOUND);
         threads.push(std::thread::spawn(move || {
-            send_cat_changes(reader, offset, start, end, tx)
+            send_cat_changes(reader, offset, start, end, tx, selected)
         }));
         rxs.push(rx);
     }

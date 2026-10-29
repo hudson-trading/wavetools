@@ -237,6 +237,23 @@ impl<W: io::Write> Writer<W> {
         writeln!(self.writer, " {}", id)
     }
 
+    /// Writes a nonempty vector of ASCII four-state values without allocating.
+    /// Uppercase X/Z are normalized; invalid values are rejected before writing.
+    pub fn change_vector_bytes(&mut self, id: IdCode, value: &[u8]) -> io::Result<()> {
+        if value.is_empty() || !value.iter().all(|b| matches!(b, b'0' | b'1' | b'x' | b'z' | b'X' | b'Z')) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid four-state vector"));
+        }
+        self.writer.write_all(b"b")?;
+        if value.iter().any(u8::is_ascii_uppercase) {
+            for byte in value {
+                self.writer.write_all(&[byte.to_ascii_lowercase()])?;
+            }
+        } else {
+            self.writer.write_all(value)?;
+        }
+        writeln!(self.writer, " {}", id)
+    }
+
     /// Writes a change to a real variable.
     pub fn change_real(&mut self, id: IdCode, v: f64) -> io::Result<()> {
         writeln!(self.writer, "r{} {}", v, id)
@@ -307,4 +324,17 @@ impl<W: io::Write> Writer<W> {
             AttributeEnd => self.attribute_end(),
         }
     }
+}
+
+#[test]
+fn byte_vectors_validate_before_writing_and_normalize_states() {
+    let mut writer = Writer::new(Vec::new());
+    let id = IdCode::from(0u32);
+    for invalid in [b"".as_slice(), b"012", b"0 1"] {
+        assert!(writer.change_vector_bytes(id, invalid).is_err());
+        assert!(writer.writer().is_empty());
+    }
+    writer.change_vector_bytes(id, b"01XZ").unwrap();
+    writer.change_vector_bytes(id, b"xz01").unwrap();
+    assert_eq!(writer.writer(), b"b01xz !\nbxz01 !\n");
 }
