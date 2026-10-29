@@ -34,9 +34,9 @@ pub struct WaveSets {
 }
 
 /// Max queued batches per channel. Each batch holds up to BATCH_SIZE changes.
-/// With 64 batches of 4096 changes at ~23 bytes/value, each channel holds
-/// ~30 MB of backlog at most.
-const CHANNEL_BOUND: usize = 64;
+/// Limit read-ahead when the two input formats decode at different speeds.
+/// Eight batches allow 32,768 queued changes without a large memory backlog.
+const CHANNEL_BOUND: usize = 8;
 
 /// Number of signal changes collected before sending a batch through the channel.
 const BATCH_SIZE: usize = 4096;
