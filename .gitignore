@@ -1,2 +1,3 @@
 **/target/
 /.venv-verilator-integration/
+__pycache__/
