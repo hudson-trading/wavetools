@@ -23,6 +23,31 @@ pub struct DiffOptions {
     pub real_epsilon: Option<f64>,
 }
 
+/// Additional output and comparison controls used by the CLI.
+#[derive(Default)]
+pub struct DiffOutputOptions {}
+
+/// Which input had trailing samples ignored because it extended beyond the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSide {
+    First,
+    Second,
+}
+
+/// Report for ignored trailing samples beyond the shorter input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrimReport {
+    pub side: DiffSide,
+    pub trim_time: u64,
+}
+
+/// Full result of a diff run.
+#[derive(Debug, Default)]
+pub struct DiffReport {
+    pub has_differences: bool,
+    pub trim: Option<TrimReport>,
+}
+
 /// Result of opening two wave file sets for comparison.
 pub struct WaveSets {
     pub readers1: Vec<WaveReader>,
@@ -327,9 +352,13 @@ fn emit_file2_only<W: Write>(
     writeln!(writer, "{} {} {} (only in file2)", time, name, value)
 }
 
+/// Record the first trailing-sample trim seen on a side (keeps the earliest).
+fn note_trim(trim: &mut Option<TrimReport>, side: DiffSide, trim_time: u64) {
+    trim.get_or_insert(TrimReport { side, trim_time });
+}
+
 /// Consumes batches from `rx1` (file1) and `rx2` (file2), buffering as needed to
-/// match signals across potentially different orderings. Returns `true` if differences
-/// were found.
+/// match signals across potentially different orderings.
 fn compare_signal_channels<W: Write>(
     writer: &mut W,
     rx1: channel::Receiver<TimeBatch>,
@@ -338,8 +367,9 @@ fn compare_signal_channels<W: Write>(
     hier1: &WaveHierarchy,
     hier2: &WaveHierarchy,
     real_epsilon: Option<f64>,
-) -> std::io::Result<bool> {
+) -> std::io::Result<DiffReport> {
     let mut has_differences = false;
+    let mut trim = None;
     // File2 changes we've read from the channel but haven't matched yet,
     // keyed by (time, handle) so we can look them up when file1 catches up.
     let mut buffered2: HashMap<(u64, usize), OwnedSignalValue> = HashMap::new();
@@ -348,21 +378,30 @@ fn compare_signal_channels<W: Write>(
     let mut matched_at_current_time: HashSet<usize> = HashSet::new();
     let mut prev_time: Option<u64> = None;
     let mut source2_ended = false;
+    let mut last_time2: Option<u64> = None;
 
-    // Drive the comparison from file1's batch stream.
+    // Drive the comparison from file1's batch stream.  Even after file2
+    // ends, keep draining file1 instead of breaking: rx1 is bounded, so
+    // bailing out here could leave the file1 reader thread blocked on send
+    // before we join it.
     for batch1 in &rx1 {
+        let t1 = batch1.time;
+        if source2_ended && last_time2.is_none_or(|t2| t1 >= t2) {
+            note_trim(&mut trim, DiffSide::First, last_time2.unwrap_or(0));
+            continue;
+        }
+
         // When we move to a new time step, evict buffer entries for file2
         // handles that were already matched -- they won't be needed again.
         if let Some(pt) = prev_time {
-            if pt != batch1.time {
+            if pt != t1 {
                 for &handle in &matched_at_current_time {
                     buffered2.remove(&(pt, handle));
                 }
                 matched_at_current_time.clear();
             }
         }
-        prev_time = Some(batch1.time);
-        let t1 = batch1.time;
+        prev_time = Some(t1);
 
         for change1 in batch1.changes {
             if let Some(handles2) = handle_mapping.get(&change1.handle) {
@@ -378,6 +417,7 @@ fn compare_signal_channels<W: Write>(
                             match rx2.recv() {
                                 Ok(batch2) => {
                                     let t2 = batch2.time;
+                                    last_time2 = Some(t2);
                                     if t2 == t1 {
                                         saw_time_in_source2 = true;
                                     }
@@ -420,6 +460,10 @@ fn compare_signal_channels<W: Write>(
                             )?;
                         }
                     } else {
+                        if source2_ended && last_time2.is_none_or(|t2| t1 >= t2) {
+                            note_trim(&mut trim, DiffSide::First, last_time2.unwrap_or(0));
+                            continue;
+                        }
                         has_differences = true;
                         let msg = if saw_time_in_source2 {
                             "(not in file2)"
@@ -453,11 +497,18 @@ fn compare_signal_channels<W: Write>(
         .drain()
         .filter(|((_t, h), _)| hier2.signal_map.contains_key(h))
         .collect();
-    if !owned.is_empty() {
+    if owned
+        .iter()
+        .any(|((time, _), _)| prev_time.is_some_and(|t1| *time < t1))
+    {
         has_differences = true;
     }
     let mut file2_only_rows: Vec<(u64, String, usize)> = Vec::new();
     for (idx, ((time, handle), _)) in owned.iter().enumerate() {
+        if prev_time.is_none_or(|t1| *time >= t1) {
+            note_trim(&mut trim, DiffSide::Second, prev_time.unwrap_or(0));
+            continue;
+        }
         for name in format_handle_names(*handle, &hier2.signal_map, &hier2.names) {
             file2_only_rows.push((*time, name, idx));
         }
@@ -476,6 +527,10 @@ fn compare_signal_channels<W: Write>(
                 if !hier2.signal_map.contains_key(&change2.handle) {
                     continue;
                 }
+                if prev_time.is_none_or(|t1| batch2.time >= t1) {
+                    note_trim(&mut trim, DiffSide::Second, prev_time.unwrap_or(0));
+                    continue;
+                }
                 has_differences = true;
                 for name in format_handle_names(change2.handle, &hier2.signal_map, &hier2.names) {
                     emit_file2_only(writer, &name, batch2.time, &change2.value)?;
@@ -484,7 +539,10 @@ fn compare_signal_channels<W: Write>(
         }
     }
 
-    Ok(has_differences)
+    Ok(DiffReport {
+        has_differences,
+        trim,
+    })
 }
 
 /// Send all signal changes from a WaveReader through a channel, applying time filtering.
@@ -740,6 +798,19 @@ pub fn diff_wave_sets<W: Write>(
     sets: WaveSets,
     options: &DiffOptions,
 ) -> std::io::Result<bool> {
+    Ok(
+        diff_wave_sets_with_report(writer, sets, options, &DiffOutputOptions::default())?
+            .has_differences,
+    )
+}
+
+/// Compare two sets of waveform files and return a full diff report.
+pub fn diff_wave_sets_with_report<W: Write>(
+    writer: &mut W,
+    sets: WaveSets,
+    options: &DiffOptions,
+    _output_options: &DiffOutputOptions,
+) -> std::io::Result<DiffReport> {
     let handle_mapping = build_handle_mapping(
         &sets.hier1.signal_map,
         &sets.hier1.names,
@@ -791,11 +862,11 @@ pub fn diff_wave_sets<W: Write>(
         Err(_) => Err(io::Error::other("wavediff set2 reader thread panicked")),
     };
 
-    let has_differences = result?;
+    let report = result?;
     thread1_result?;
     thread2_result?;
 
-    Ok(has_differences)
+    Ok(report)
 }
 
 /// Open two sets of waveform files and return readers and merged hierarchies
