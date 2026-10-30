@@ -599,9 +599,15 @@ pub(crate) fn next_vcd_change(
                     )));
                 }
             }
-            vcd::Command::ChangeVector(id, ref vec) => {
+            vcd::Command::ChangeVector(id, vec) => {
                 if let Some(&idx) = vcd_data.id_to_idx.get(&id) {
-                    let s: String = vec.iter().map(vcd_value_char).collect();
+                    // Consuming the vector lets collect reuse its allocation for
+                    // the one-byte ASCII values instead of allocating a String.
+                    let bytes = Vec::<vcd::Value>::from(vec)
+                        .into_iter()
+                        .map(|value| vcd_value_char(value) as u8)
+                        .collect();
+                    let s = String::from_utf8(bytes).expect("VCD values are ASCII");
                     return Ok(Some((vcd_data.current_time, idx, s)));
                 }
             }

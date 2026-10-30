@@ -367,13 +367,16 @@ fn compare_signal_channels<W: Write>(
         for change1 in batch1.changes {
             if let Some(handles2) = handle_mapping.get(&change1.handle) {
                 for &handle2 in handles2 {
-                    let mut found = buffered2.get(&(t1, handle2)).cloned();
+                    // Keep the first match from a new batch: later changes in that
+                    // batch may overwrite its entry in buffered2. Existing entries
+                    // can be compared by reference without cloning their values.
+                    let mut found = None;
                     let mut saw_time_in_source2 = false;
 
                     // Read ahead on file2's channel until we find the target
                     // (time, handle) or pass it.  Entire batches are drained
                     // into the buffer at once.
-                    if found.is_none() && !source2_ended {
+                    if !buffered2.contains_key(&(t1, handle2)) && !source2_ended {
                         loop {
                             match rx2.recv() {
                                 Ok(batch2) => {
@@ -401,13 +404,13 @@ fn compare_signal_channels<W: Write>(
                         }
                     }
 
-                    if let Some(value2) = found {
+                    if let Some(value2) = found.as_ref().or_else(|| buffered2.get(&(t1, handle2))) {
                         matched_at_current_time.insert(handle2);
                         let use_real_epsilon =
                             handles_are_real(hier1, change1.handle, hier2, handle2);
                         if !change1
                             .value
-                            .approx_eq(&value2, real_epsilon, use_real_epsilon)
+                            .approx_eq(value2, real_epsilon, use_real_epsilon)
                         {
                             has_differences = true;
                             emit_value_diff(
@@ -416,7 +419,7 @@ fn compare_signal_channels<W: Write>(
                                 hier1,
                                 t1,
                                 &change1.value,
-                                &value2,
+                                value2,
                             )?;
                         }
                     } else {
@@ -842,6 +845,41 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn comparison_preserves_first_and_buffered_repeated_values() {
+        let (_, hierarchy) =
+            crate::open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default())
+                .unwrap();
+        let (tx1, rx1) = channel::unbounded();
+        let (tx2, rx2) = channel::unbounded();
+        for tx in [tx1, tx2] {
+            tx.send(TimeBatch {
+                time: 0,
+                changes: b"01"
+                    .iter()
+                    .copied()
+                    .map(|value| SignalChange {
+                        handle: 0,
+                        value: OwnedSignalValue::String(vec![value]),
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        }
+        let mut output = Vec::new();
+        assert!(!compare_signal_channels(
+            &mut output,
+            rx1,
+            rx2,
+            &HashMap::from([(0, vec![0])]),
+            &hierarchy,
+            &hierarchy,
+            None,
+        )
+        .unwrap());
+        assert!(output.is_empty());
     }
 
     #[test]
