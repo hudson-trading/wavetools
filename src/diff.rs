@@ -25,7 +25,9 @@ pub struct DiffOptions {
 
 /// Additional output and comparison controls used by the CLI.
 #[derive(Default)]
-pub struct DiffOutputOptions {}
+pub struct DiffOutputOptions {
+    pub ignore_xz: bool,
+}
 
 /// Which input had trailing samples ignored because it extended beyond the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +108,16 @@ impl OwnedSignalValue {
     }
 
     /// Compare two values, using epsilon for real-valued signals when provided.
-    fn approx_eq(&self, other: &Self, real_epsilon: Option<f64>, use_real_epsilon: bool) -> bool {
+    fn approx_eq(
+        &self,
+        other: &Self,
+        real_epsilon: Option<f64>,
+        use_real_epsilon: bool,
+        ignore_xz: bool,
+    ) -> bool {
+        if ignore_xz && self.eq_with_xz_mask(other) {
+            return true;
+        }
         match (self, other, real_epsilon.filter(|_| use_real_epsilon)) {
             (OwnedSignalValue::Real(a), OwnedSignalValue::Real(b), Some(eps)) => {
                 (a - b).abs() <= eps
@@ -131,6 +142,57 @@ impl OwnedSignalValue {
             _ => self == other,
         }
     }
+
+    fn eq_with_xz_mask(&self, other: &Self) -> bool {
+        let (OwnedSignalValue::String(left), OwnedSignalValue::String(right)) = (self, other)
+        else {
+            return false;
+        };
+        if left.len() != right.len()
+            || left.is_empty()
+            || !left
+                .iter()
+                .chain(right)
+                .all(|byte| is_logic_value_byte(*byte))
+        {
+            return false;
+        }
+        left.iter().zip(right).all(|(left, right)| {
+            if is_xz_mask_bit(*left) || is_xz_mask_bit(*right) {
+                true
+            } else {
+                left == right
+            }
+        })
+    }
+}
+
+fn is_xz_mask_bit(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'x' | b'X' | b'z' | b'Z' | b'u' | b'U' | b'w' | b'W' | b'-' | b'?'
+    )
+}
+
+fn is_logic_value_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'0' | b'1'
+            | b'x'
+            | b'X'
+            | b'z'
+            | b'Z'
+            | b'u'
+            | b'U'
+            | b'w'
+            | b'W'
+            | b'-'
+            | b'?'
+            | b'h'
+            | b'H'
+            | b'l'
+            | b'L'
+    )
 }
 
 fn is_real_var_type(var_type: &str) -> bool {
@@ -357,6 +419,13 @@ fn note_trim(trim: &mut Option<TrimReport>, side: DiffSide, trim_time: u64) {
     trim.get_or_insert(TrimReport { side, trim_time });
 }
 
+struct CompareSignalContext<'a> {
+    hier1: &'a WaveHierarchy,
+    hier2: &'a WaveHierarchy,
+    real_epsilon: Option<f64>,
+    ignore_xz: bool,
+}
+
 /// Consumes batches from `rx1` (file1) and `rx2` (file2), buffering as needed to
 /// match signals across potentially different orderings.
 fn compare_signal_channels<W: Write>(
@@ -364,10 +433,14 @@ fn compare_signal_channels<W: Write>(
     rx1: channel::Receiver<TimeBatch>,
     rx2: channel::Receiver<TimeBatch>,
     handle_mapping: &HashMap<usize, Vec<usize>>,
-    hier1: &WaveHierarchy,
-    hier2: &WaveHierarchy,
-    real_epsilon: Option<f64>,
+    context: CompareSignalContext<'_>,
 ) -> std::io::Result<DiffReport> {
+    let CompareSignalContext {
+        hier1,
+        hier2,
+        real_epsilon,
+        ignore_xz,
+    } = context;
     let mut has_differences = false;
     let mut trim = None;
     // File2 changes we've read from the channel but haven't matched yet,
@@ -445,10 +518,12 @@ fn compare_signal_channels<W: Write>(
                         matched_at_current_time.insert(handle2);
                         let use_real_epsilon =
                             handles_are_real(hier1, change1.handle, hier2, handle2);
-                        if !change1
-                            .value
-                            .approx_eq(&value2, real_epsilon, use_real_epsilon)
-                        {
+                        if !change1.value.approx_eq(
+                            &value2,
+                            real_epsilon,
+                            use_real_epsilon,
+                            ignore_xz,
+                        ) {
                             has_differences = true;
                             emit_value_diff(
                                 writer,
@@ -536,6 +611,159 @@ fn compare_signal_channels<W: Write>(
                     emit_file2_only(writer, &name, batch2.time, &change2.value)?;
                 }
             }
+        }
+    }
+
+    Ok(DiffReport {
+        has_differences,
+        trim,
+    })
+}
+
+/// Collect every change at time `t` from one stream, leaving `head` pointing at
+/// the first batch with a later time (or `None` at end of stream).
+fn drain_time(
+    rx: &channel::Receiver<TimeBatch>,
+    head: &mut Option<TimeBatch>,
+    t: u64,
+) -> Vec<SignalChange> {
+    let mut out = Vec::new();
+    while matches!(head, Some(batch) if batch.time == t) {
+        out.extend(head.take().unwrap().changes);
+        *head = rx.recv().ok();
+    }
+    out
+}
+
+/// State-tracking comparison used when `--ignore-xz` is set.
+///
+/// Unlike [`compare_signal_channels`], which only compares when both sides emit a
+/// change at the same time, this carries each signal's last-known value forward
+/// and, at every timestamp where either side changes, compares the resulting
+/// held state. That lets X/Z-bit masking apply even when only one side changes --
+/// e.g. one side settles to a real value while the other still holds `x` or `z`.
+fn compare_signal_channels_stateful<W: Write>(
+    writer: &mut W,
+    rx1: channel::Receiver<TimeBatch>,
+    rx2: channel::Receiver<TimeBatch>,
+    handle_mapping: &HashMap<usize, Vec<usize>>,
+    context: CompareSignalContext<'_>,
+) -> std::io::Result<DiffReport> {
+    let CompareSignalContext {
+        hier1,
+        hier2,
+        real_epsilon,
+        ignore_xz,
+    } = context;
+    let mut has_differences = false;
+    let mut trim = None;
+
+    // Flatten the file1->file2 handle mapping into (handle1, handle2) pairs plus
+    // reverse indices so a change on either side finds the pairs it touches.
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut a_to_pairs: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut b_to_pairs: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (&handle1, handles2) in handle_mapping {
+        for &handle2 in handles2 {
+            let pair = pairs.len();
+            pairs.push((handle1, handle2));
+            a_to_pairs.entry(handle1).or_default().push(pair);
+            b_to_pairs.entry(handle2).or_default().push(pair);
+        }
+    }
+    let pair_real: Vec<bool> = pairs
+        .iter()
+        .map(|&(h1, h2)| handles_are_real(hier1, h1, hier2, h2))
+        .collect();
+
+    // Last-known value per side, keyed by handle. `None` until first seen.
+    let mut held1: HashMap<usize, OwnedSignalValue> = HashMap::new();
+    let mut held2: HashMap<usize, OwnedSignalValue> = HashMap::new();
+
+    let mut head1 = rx1.recv().ok();
+    let mut head2 = rx2.recv().ok();
+    let mut last_t1: Option<u64> = None;
+    let mut last_t2: Option<u64> = None;
+
+    loop {
+        let t1 = head1.as_ref().map(|b| b.time);
+        let t2 = head2.as_ref().map(|b| b.time);
+        let t = match (t1, t2) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => break,
+        };
+
+        // Once one stream ends, the other's trailing samples beyond the last
+        // common time are ignored, not diffed (mirrors compare_signal_channels).
+        if head2.is_none() && last_t2.is_none_or(|lt| t >= lt) {
+            note_trim(&mut trim, DiffSide::First, last_t2.unwrap_or(0));
+            drain_time(&rx1, &mut head1, t);
+            last_t1 = Some(t);
+            continue;
+        }
+        if head1.is_none() && last_t1.is_none_or(|lt| t >= lt) {
+            note_trim(&mut trim, DiffSide::Second, last_t1.unwrap_or(0));
+            drain_time(&rx2, &mut head2, t);
+            last_t2 = Some(t);
+            continue;
+        }
+
+        let mut changed: HashSet<usize> = HashSet::new();
+        // (name, full line) rows produced at this time, sorted by name before
+        // writing so output does not depend on stream/HashMap ordering.
+        let mut rows: Vec<(String, String)> = Vec::new();
+
+        if t1 == Some(t) {
+            for change in drain_time(&rx1, &mut head1, t) {
+                if let Some(pids) = a_to_pairs.get(&change.handle) {
+                    changed.extend(pids.iter().copied());
+                    held1.insert(change.handle, change.value);
+                }
+                // file1-only handles are ignored, matching the default path.
+            }
+            last_t1 = Some(t);
+        }
+        if t2 == Some(t) {
+            for change in drain_time(&rx2, &mut head2, t) {
+                if let Some(pids) = b_to_pairs.get(&change.handle) {
+                    changed.extend(pids.iter().copied());
+                    held2.insert(change.handle, change.value);
+                } else if hier2.signal_map.contains_key(&change.handle) {
+                    for name in format_handle_names(change.handle, &hier2.signal_map, &hier2.names)
+                    {
+                        has_differences = true;
+                        rows.push((
+                            name.clone(),
+                            format!("{} {} {} (only in file2)", t, name, change.value),
+                        ));
+                    }
+                }
+            }
+            last_t2 = Some(t);
+        }
+
+        for pair in changed {
+            let (handle1, handle2) = pairs[pair];
+            let (Some(value1), Some(value2)) = (held1.get(&handle1), held2.get(&handle2)) else {
+                // Skip until both sides have produced a value.
+                continue;
+            };
+            if !value1.approx_eq(value2, real_epsilon, pair_real[pair], ignore_xz) {
+                for name in format_handle_names(handle1, &hier1.signal_map, &hier1.names) {
+                    has_differences = true;
+                    rows.push((
+                        name.clone(),
+                        format!("{} {} {} != {}", t, name, value1, value2),
+                    ));
+                }
+            }
+        }
+
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_name, line) in rows {
+            writeln!(writer, "{}", line)?;
         }
     }
 
@@ -809,7 +1037,7 @@ pub fn diff_wave_sets_with_report<W: Write>(
     writer: &mut W,
     sets: WaveSets,
     options: &DiffOptions,
-    _output_options: &DiffOutputOptions,
+    output_options: &DiffOutputOptions,
 ) -> std::io::Result<DiffReport> {
     let handle_mapping = build_handle_mapping(
         &sets.hier1.signal_map,
@@ -843,15 +1071,17 @@ pub fn diff_wave_sets_with_report<W: Write>(
         send_merged_wave_changes(readers2, &offsets2, include_sets2, start, end, tx2)
     });
 
-    let result = compare_signal_channels(
-        writer,
-        rx1,
-        rx2,
-        &handle_mapping,
-        &hier1,
-        &hier2,
-        options.real_epsilon,
-    );
+    let context = CompareSignalContext {
+        hier1: &hier1,
+        hier2: &hier2,
+        real_epsilon: options.real_epsilon,
+        ignore_xz: output_options.ignore_xz,
+    };
+    let result = if output_options.ignore_xz {
+        compare_signal_channels_stateful(writer, rx1, rx2, &handle_mapping, context)
+    } else {
+        compare_signal_channels(writer, rx1, rx2, &handle_mapping, context)
+    };
 
     let thread1_result = match thread1.join() {
         Ok(r) => r,
