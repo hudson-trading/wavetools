@@ -32,7 +32,7 @@ jobs:
     outputs:
       matrix: ${{ steps.shards.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Discover benchmark shards
         id: shards
         run: echo "matrix=$(python3 tests/performance/run.py --print-shard-matrix)" >> "$GITHUB_OUTPUT"
@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
