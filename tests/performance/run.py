@@ -172,7 +172,7 @@ def generate_vcd(path, size_bytes, signals, seed):
 def execute(command, stderr_path, timeout, timing_path=None, capture_stdout=False):
     """Run quietly, killing the whole subprocess group on timeout."""
     if timing_path is not None:
-        command = ["/usr/bin/time", "-f", "%e %M", "-o", str(timing_path), *command]
+        command = ["/usr/bin/time", "-f", "%e %M %U %S %w %c", "-o", str(timing_path), *command]
     with stderr_path.open("wb") as stderr:
         process = subprocess.Popen(
             [str(arg) for arg in command],
@@ -197,13 +197,18 @@ def execute(command, stderr_path, timeout, timing_path=None, capture_stdout=Fals
         raise RuntimeError(f"Command failed ({status}): {command}\n{details}")
     if timing_path is None:
         return None
-    seconds, rss = timing_path.read_text().split()
+    seconds, rss, user, system, voluntary, involuntary = timing_path.read_text().split()
     elapsed, rss = float(seconds), int(rss)
     if not math.isfinite(elapsed) or elapsed <= 0:
         raise RuntimeError("Workload too short for GNU time; increase --size-mib")
     if rss <= 0:
         raise RuntimeError("GNU time did not report a positive peak RSS")
-    return {"seconds": elapsed, "peak_rss_kib": rss}
+    return {
+        "seconds": elapsed, "peak_rss_kib": rss,
+        "user_seconds": float(user), "system_seconds": float(system),
+        "voluntary_context_switches": int(voluntary),
+        "involuntary_context_switches": int(involuntary),
+    }
 
 
 def compare(samples):

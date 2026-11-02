@@ -301,6 +301,29 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(a.read_text().count("$var wire 64"), 16)
         self.assertEqual(len({harness.id_code(i) for i in range(20000)}), 20000)
 
+    def test_timing_records_cpu_and_context_switch_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            timing = Path(directory) / "time"
+            # Distinct values catch swapped GNU time fields.
+            with patch.object(harness.subprocess, "Popen") as process:
+                process.return_value.wait.return_value = 0
+                timing.write_text("2.50 123456 3.25 0.75 42 17\n")
+                sample = harness.execute(
+                    ["tool"], Path(directory) / "stderr", 5, timing,
+                )
+                command = process.call_args.args[0]
+                self.assertEqual(command[2], "%e %M %U %S %w %c")
+            self.assertEqual(sample, {
+                "seconds": 2.5, "peak_rss_kib": 123456,
+                "user_seconds": 3.25, "system_seconds": 0.75,
+                "voluntary_context_switches": 42,
+                "involuntary_context_switches": 17,
+            })
+            noisy = dict(sample, user_seconds=100, involuntary_context_switches=9999)
+            metrics = harness.compare({"baseline": [sample], "current": [noisy]})
+            self.assertEqual(set(metrics), {"seconds", "peak_rss_kib"})
+            self.assertFalse(any(metric["failed"] for metric in metrics.values()))
+
     def test_failed_command_is_not_a_performance_result(self):
         with tempfile.TemporaryDirectory() as directory:
             stderr = Path(directory) / "error"

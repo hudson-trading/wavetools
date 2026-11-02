@@ -80,11 +80,17 @@ from successful comparisons or conversions.
 GNU time measures command wall time and peak resident memory in KiB, including
 the tool's worker threads. Its elapsed-time resolution is 0.01 seconds, so use
 large workloads; zero-duration samples are rejected. For **each case and each
-metric**, compare arithmetic means across measured runs. If the mean increases
+of these two metrics**, compare arithmetic means across measured runs. If the mean increases
 by **more than 5%**, the harness reports FAIL and
 returns exit status 1. It never averages away a failure across cases. Setup,
 command, validation, and timeout failures return 2. The per-command timeout is
 600 seconds, configurable with `--timeout`.
+
+Each sample also records user and system CPU seconds and voluntary/involuntary
+context-switch counts from GNU time. These are diagnostic only and do not affect
+pass/fail. CPU times include worker threads and can sum to more than wall time.
+Higher wall time without higher CPU time can indicate scheduling delays; context
+switches provide supporting evidence, but cannot establish the cause alone.
 
 This measures warm-cache conversion to buffered files, including file close but
 without an explicit fsync. It does not measure cold storage or durable write
@@ -133,6 +139,12 @@ This skips building the checkout but keeps the same workloads, warm-ups,
 alternating execution order, measurements, and 5% mean threshold. Any reported
 regression in this mode is a false positive caused by measurement variability.
 Use a separate work directory to preserve the original comparison report.
+
+When a CI comparison fails, that shard automatically runs this self-check with
+the same resolved baseline, run count, and workload size. Its report and stderr
+logs are uploaded from `target/performance-self-check/shard-I/` alongside the
+original measurements. A passing self-check does not clear the original failure;
+it measures subsequent variability, not conditions during the failed run.
 
 ## Benchmarking a separate build
 

@@ -71,6 +71,7 @@ jobs:
           path: target/performance/baselines
           key: performance-baseline-ubuntu24-${{ runner.arch }}-${{ steps.baseline.outputs.id }}-${{ steps.rust.outputs.cachekey }}-v3
       - name: Compare release performance
+        id: comparison
         env:
           NUM_SHARDS: ${{ matrix.num_shards }}
           SHARD: ${{ matrix.shard }}
@@ -85,6 +86,23 @@ jobs:
           fi
           python3 tests/performance/run.py "${args[@]}" --runs "$RUNS" --size-mib "$SIZE_MIB" \
             --num-shards "$NUM_SHARDS" --shard "$SHARD"
+      - name: Check baseline variability after failure
+        if: ${{ failure() && steps.comparison.outcome == 'failure' }}
+        env:
+          NUM_SHARDS: ${{ matrix.num_shards }}
+          SHARD: ${{ matrix.shard }}
+          RUNS: ${{ inputs.runs || '50' }}
+          SIZE_MIB: ${{ inputs.size_mib || '256' }}
+          BASELINE_VERSION: ${{ inputs.baseline_version }}
+          BASELINE_REF: ${{ steps.baseline.outputs.id }}
+        run: |
+          args=(--baseline-ref "$BASELINE_REF")
+          if [[ -n "$BASELINE_VERSION" ]]; then
+            args=(--baseline-version "$BASELINE_REF")
+          fi
+          python3 tests/performance/run.py "${args[@]}" --runs "$RUNS" --size-mib "$SIZE_MIB" \
+            --num-shards "$NUM_SHARDS" --shard "$SHARD" \
+            --baseline-self-check --work-dir target/performance-self-check
       - name: Upload measurements and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -93,4 +111,6 @@ jobs:
           path: |
             target/performance/shard-${{ matrix.shard }}/results.json
             target/performance/shard-${{ matrix.shard }}/*.stderr
+            target/performance-self-check/shard-${{ matrix.shard }}/results.json
+            target/performance-self-check/shard-${{ matrix.shard }}/*.stderr
           if-no-files-found: ignore
