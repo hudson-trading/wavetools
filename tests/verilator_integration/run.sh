@@ -5,10 +5,10 @@
 #
 # Environment variables (all optional):
 #   WAVEDIFF        Path to wavediff binary (default: build from this repo)
-#   VERILATOR_DIR   Pre-existing verilator source dir (skip clone+build if its
-#                   bin/verilator_bin already exists)
+#   VERILATOR_DIR   Pre-existing complete source dir; never replaced by this
+#                   runner. Skip build if bin/verilator_bin already exists.
 #   VERILATOR_TAG   Release tag to clone (default: latest v* tag on origin)
-#   WORK_DIR        Scratch dir for clone/build (default: target/verilator-integration)
+#   WORK_DIR        Scratch dir for clone/build (default: .verilator-integration)
 #   JOBS            Driver parallelism (default: 0 = all cores)
 #   SCENARIO        Driver scenario flag (default: --vlt)
 #   PYTHON3         Python 3.10+ interpreter to use for the venv (default: probe
@@ -51,7 +51,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 WAVEDIFF="${WAVEDIFF:-$REPO_ROOT/target/release/wavediff}"
 VERILATOR_DIR="${VERILATOR_DIR:-}"
 VERILATOR_TAG="${VERILATOR_TAG:-}"
-WORK_DIR="${WORK_DIR:-$REPO_ROOT/target/verilator-integration}"
+WORK_DIR="${WORK_DIR:-$REPO_ROOT/.verilator-integration}"
 JOBS="${JOBS:-0}"
 SCENARIO="${SCENARIO:---vlt}"
 
@@ -96,20 +96,27 @@ log "Using wavediff: $WAVEDIFF"
 # ---------------------------------------------------------------------------
 # 2. Clone the latest Verilator release tag (unless caller supplied a dir).
 # ---------------------------------------------------------------------------
+# Keep managed sources outside target/: rust-cache prunes non-Cargo files.
+# shellcheck source=source.sh
+source "$SCRIPT_DIR/source.sh"
 if [[ -z "$VERILATOR_DIR" ]]; then
-    VERILATOR_DIR="$WORK_DIR/verilator"
-fi
-VERILATOR_DIR="$(readlink -f "$VERILATOR_DIR" 2>/dev/null || echo "$VERILATOR_DIR")"
-
-if [[ ! -d "$VERILATOR_DIR/.git" ]] && [[ ! -x "$VERILATOR_DIR/bin/verilator_bin" ]]; then
     if [[ -z "$VERILATOR_TAG" ]]; then
         log "Resolving latest Verilator release tag"
         VERILATOR_TAG="$(resolve_latest_tag)"
     fi
-    log "Cloning verilator@$VERILATOR_TAG into $VERILATOR_DIR"
-    git clone --depth=1 --branch "$VERILATOR_TAG" \
-        https://github.com/verilator/verilator.git "$VERILATOR_DIR"
+    VERILATOR_DIR="$WORK_DIR/verilator"
+    prepare_verilator_source "$VERILATOR_DIR" "$VERILATOR_TAG"
+else
+    if ! verilator_source_complete "$VERILATOR_DIR"; then
+        echo "error: incomplete source tree in VERILATOR_DIR=$VERILATOR_DIR" >&2
+        exit 1
+    fi
+    if [[ -n "$VERILATOR_TAG" ]] && ! verilator_at_tag "$VERILATOR_DIR" "$VERILATOR_TAG"; then
+        echo "error: VERILATOR_DIR does not match requested tag $VERILATOR_TAG" >&2
+        exit 1
+    fi
 fi
+VERILATOR_DIR="$(readlink -f "$VERILATOR_DIR")"
 
 # ---------------------------------------------------------------------------
 # 3. Build verilator.
@@ -136,7 +143,7 @@ if [[ ! -f "$VENV_DIR/bin/activate" || ! -f "$VENV_DIR/pyvenv.cfg" ]] || \
     log "Creating or repairing venv at $VENV_DIR with $PYTHON3"
     "$PYTHON3" -m venv --clear "$VENV_DIR"
 fi
-# shellcheck disable=SC1091
+# shellcheck disable=SC1090,SC1091
 source "$VENV_DIR/bin/activate"
 log "Installing verilator python-dev-requirements"
 python3 -m pip install --quiet --upgrade pip
