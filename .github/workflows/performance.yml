@@ -8,8 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: Measured runs per binary and test
-        default: "10"
+        description: Measured runs per binary and test (blank uses 50)
       size_mib:
         description: Generated VCD size in MiB
         default: "256"
@@ -28,7 +27,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.shards.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Discover benchmark shards
+        id: shards
+        run: echo "matrix=$(python3 tests/performance/run.py --print-shard-matrix)" >> "$GITHUB_OUTPUT"
+
   compare:
+    needs: discover
+    name: Performance (${{ matrix.case }})
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -60,7 +74,9 @@ jobs:
           key: performance-baseline-ubuntu24-${{ runner.arch }}-${{ steps.baseline.outputs.id }}-${{ steps.rust.outputs.cachekey }}-v3
       - name: Compare release performance
         env:
-          RUNS: ${{ inputs.runs || '10' }}
+          NUM_SHARDS: ${{ matrix.num_shards }}
+          SHARD: ${{ matrix.shard }}
+          RUNS: ${{ inputs.runs || '50' }}
           SIZE_MIB: ${{ inputs.size_mib || '256' }}
           BASELINE_VERSION: ${{ inputs.baseline_version }}
           BASELINE_REF: ${{ steps.baseline.outputs.id }}
@@ -69,13 +85,14 @@ jobs:
           if [[ -n "$BASELINE_VERSION" ]]; then
             args=(--baseline-version "$BASELINE_REF")
           fi
-          python3 tests/performance/run.py "${args[@]}" --runs "$RUNS" --size-mib "$SIZE_MIB"
+          python3 tests/performance/run.py "${args[@]}" --runs "$RUNS" --size-mib "$SIZE_MIB" \
+            --num-shards "$NUM_SHARDS" --shard "$SHARD"
       - name: Upload measurements and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: performance-results
+          name: performance-results-${{ matrix.shard }}
           path: |
-            target/performance/results.json
-            target/performance/*.stderr
+            target/performance/shard-${{ matrix.shard }}/results.json
+            target/performance/shard-${{ matrix.shard }}/*.stderr
           if-no-files-found: ignore
