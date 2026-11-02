@@ -17,6 +17,7 @@ Use stable Rust; the declared minimum Rust version is 1.85.
 - `scripts/rustfmt-non-vendored --check`: check formatting; omit `--check` to format.
 - `cargo clippy --all-targets --all-features -- -D warnings`: lint production and test code strictly.
 - `python3 -m unittest discover -s tests/performance -p 'test_*.py'`: test the benchmark harness.
+- `python3 -m pytest tests`: run all Python tests (install pytest first); discovers both pytest and unittest tests.
 
 Install configured hooks with `pre-commit install`.
 
