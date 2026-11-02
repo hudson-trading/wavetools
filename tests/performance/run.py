@@ -241,6 +241,116 @@ def print_summary(report):
         if index == 0:
             log("-+-".join("-" * width for width in widths))
 
+def parse_cpu_list(value):
+    cpus = set()
+    for part in value.strip().split(","):
+        if part:
+            bounds = [int(v) for v in part.split("-")]
+            cpus.update(range(bounds[0], bounds[-1] + 1))
+    return cpus
+
+
+def select_cpus(allowed, system=Path("/sys/devices/system")):
+    """Prefer up to three physical cores sharing L3, within existing affinity."""
+    def read(path):
+        try:
+            return path.read_text().strip()
+        except OSError:
+            return ""
+
+    cores = {}
+    groups = set()
+    for cpu in sorted(allowed):
+        directory = system / "cpu" / f"cpu{cpu}"
+        socket = read(directory / "topology/physical_package_id")
+        core = read(directory / "topology/core_id")
+        cores[cpu] = (socket, core) if socket and core else ("unknown", str(cpu))
+        for cache in (directory / "cache").glob("index*"):
+            if read(cache / "level") == "3":
+                shared = parse_cpu_list(read(cache / "shared_cpu_list")) & allowed
+                if shared:
+                    groups.add(tuple(sorted(shared)))
+    source = "L3"
+    if not groups:
+        source = "NUMA"
+        for node in (system / "node").glob("node[0-9]*"):
+            shared = parse_cpu_list(read(node / "cpulist")) & allowed
+            if shared:
+                groups.add(tuple(sorted(shared)))
+    if not groups:
+        source = "allowed CPUs"
+        groups.add(tuple(sorted(allowed)))
+
+    def representatives(group):
+        unique = {}
+        for cpu in group:
+            unique.setdefault(cores[cpu], cpu)
+        return sorted(unique.values())[:3]
+
+    group = min(groups, key=lambda g: (-len(representatives(g)), g))
+    return representatives(group), {"source": source, "shared_cpus": list(group)}
+
+
+def cache_neighbors(allowed, system=Path("/sys/devices/system")):
+    """Report cache-sharing groups intersected with the inherited affinity."""
+    groups = set()
+    for cpu in sorted(allowed):
+        for cache in (system / "cpu" / f"cpu{cpu}" / "cache").glob("index*"):
+            try:
+                level = int((cache / "level").read_text())
+                kind = (cache / "type").read_text().strip()
+                cpus = parse_cpu_list((cache / "shared_cpu_list").read_text()) & allowed
+            except (OSError, ValueError):
+                continue
+            if cpus:
+                groups.add((level, kind, tuple(sorted(cpus))))
+    return [{"level": level, "type": kind, "cpus": list(cpus)}
+            for level, kind, cpus in sorted(groups)]
+
+
+def pin_cpus(disabled):
+    allowed = os.sched_getaffinity(0)
+    selected, topology = (sorted(allowed), {"source": "disabled"}) if disabled else select_cpus(allowed)
+    if not disabled:
+        os.sched_setaffinity(0, selected)
+    caches = cache_neighbors(allowed)
+    log(f"Inherited CPU affinity: {sorted(allowed)}")
+    log(f"Benchmark CPU affinity: {selected} ({topology['source']})")
+    log("Cache neighbors within inherited affinity:")
+    for cache in caches:
+        used = sorted(set(cache["cpus"]) & set(selected))
+        log(f"  L{cache['level']} {cache['type']}: {cache['cpus']}; benchmark CPUs: {used}")
+    if not caches:
+        log("  Cache topology unavailable")
+    return {"enabled": not disabled, "allowed_cpus": sorted(allowed),
+            "selected_cpus": selected, "cache_neighbors": caches, **topology}
+
+
+def benchmark_cases(scratch, gtkwave=False):
+    vcd, fst = scratch / "input.vcd", scratch / "input.fst"
+    cases = [
+        ("wavediff-fst", "wavediff", fst, scratch / "identical.fst", None),
+        ("wavediff-vcd", "wavediff", vcd, scratch / "identical.vcd", None),
+        ("wavediff-vcd-fst", "wavediff", vcd, fst, None),
+        ("wavecat-fst-to-vcd", "wavecat", fst, scratch / "output.vcd", None),
+        ("wavecat-vcd-to-fst", "wavecat", vcd, scratch / "output.fst", None),
+    ]
+    if gtkwave:
+        cases += [
+            ("wavecat-vs-fst2vcd", "wavecat", fst, scratch / "output.vcd", "fst2vcd"),
+            ("wavecat-vs-vcd2fst", "wavecat", vcd, scratch / "output.fst", "vcd2fst"),
+        ]
+    return cases
+
+
+def shard_cases(cases, num_shards, shard):
+    if not 1 <= num_shards <= len(cases):
+        raise ValueError(f"--num-shards must be between 1 and {len(cases)}")
+    if not 0 <= shard < num_shards:
+        raise ValueError("--shard must be between 0 and --num-shards - 1")
+    return cases[shard::num_shards]
+
+
 def run_benchmarks(args, baseline_spec):
     if platform.system() != "Linux" or not Path("/usr/bin/time").is_file():
         raise RuntimeError("This harness requires Linux and GNU /usr/bin/time")
@@ -252,15 +362,17 @@ def run_benchmarks(args, baseline_spec):
         subprocess.run(["cargo", "build", "--release", "--locked", "--bins",
                         "--target-dir", str(ROOT / "target")], cwd=ROOT, check=True)
     current = baseline if args.baseline_self_check else (args.current_bin or ROOT / "target" / "release").resolve()
+    selected_cases = shard_cases(benchmark_cases(Path("."), args.gtkwave), args.num_shards, args.shard)
     converters = {}
     if args.gtkwave:
-        for tool in ("fst2vcd", "vcd2fst"):
+        for tool in sorted({case[4] for case in selected_cases if case[4]}):
             converters[tool] = shutil.which(tool)
             if not converters[tool]:
                 raise RuntimeError(f"--gtkwave requires {tool} on PATH")
     for tool in TOOLS:
         if binary_version(current / tool) is None:
             raise RuntimeError(f"Missing release binary: {current / tool}")
+    pinning = pin_cpus(args.no_pin)
     report = {
         "baseline": baseline_spec,
         "baseline_version": binary_version(baseline / "wavecat"),
@@ -277,6 +389,9 @@ def run_benchmarks(args, baseline_spec):
         },
         "platform": platform.platform(), "runs": args.runs,
         "cpu_affinity": sorted(os.sched_getaffinity(0)),
+        "pinning": pinning,
+        "num_shards": args.num_shards, "shard": args.shard,
+        "selected_cases": [case[0] for case in selected_cases],
         "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
         "size_mib": args.size_mib, "signals": args.signals, "seed": args.seed,
         "timeout_seconds": args.timeout, "regression_limit_percent": MAX_INCREASE * 100,
@@ -294,23 +409,10 @@ def run_benchmarks(args, baseline_spec):
                 args.work_dir / "prepare.stderr", args.timeout)
         report["input_bytes"] = {"vcd": vcd.stat().st_size, "fst": fst.stat().st_size}
         log(f"Input sizes: VCD {vcd.stat().st_size / 2**20:.1f} MiB; FST {fst.stat().st_size / 2**20:.1f} MiB")
-        copies = {}
-        for source in (vcd, fst):
-            duplicate = source.with_name("identical" + source.suffix)
-            shutil.copyfile(source, duplicate)
-            copies[source] = duplicate
-        cases = [
-            ("wavediff-fst", "wavediff", fst, copies[fst], None),
-            ("wavediff-vcd", "wavediff", vcd, copies[vcd], None),
-            ("wavediff-vcd-fst", "wavediff", vcd, fst, None),
-            ("wavecat-fst-to-vcd", "wavecat", fst, scratch / "output.vcd", None),
-            ("wavecat-vcd-to-fst", "wavecat", vcd, scratch / "output.fst", None),
-        ]
-        if args.gtkwave:
-            cases += [
-                ("wavecat-vs-fst2vcd", "wavecat", fst, scratch / "output.vcd", "fst2vcd"),
-                ("wavecat-vs-vcd2fst", "wavecat", vcd, scratch / "output.fst", "vcd2fst"),
-            ]
+        cases = shard_cases(benchmark_cases(scratch, args.gtkwave), args.num_shards, args.shard)
+        for _, tool, source, destination, _ in cases:
+            if tool == "wavediff" and destination.name.startswith("identical"):
+                shutil.copyfile(source, destination)
         for name, tool, source, destination, converter in cases:
             samples = {"baseline": [], "current": []}
             for iteration in range(args.runs + 1):
@@ -378,18 +480,36 @@ def main():
     parser.add_argument("--current-bin", type=Path, help="use separately built release binaries; skip current build")
     parser.add_argument("--skip-build", action="store_true", help="use already built target/release binaries")
     parser.add_argument("--work-dir", type=Path, default=ROOT / "target/performance")
+    parser.add_argument("--no-pin", action="store_true", help="keep inherited CPU affinity")
+    parser.add_argument("--num-shards", type=positive_int, default=1, help="number of case shards")
+    parser.add_argument("--shard", type=int, default=0, help="zero-based shard index")
+    parser.add_argument("--print-shard-matrix", action="store_true", help="print CI matrix with one case per shard")
     args = parser.parse_args()
+    original_affinity = None
     try:
+        cases = benchmark_cases(Path("."), args.gtkwave)
+        if args.print_shard_matrix:
+            print(json.dumps({"include": [
+                {"shard": index, "num_shards": len(cases), "case": case[0]}
+                for index, case in enumerate(cases)]}))
+            return 0
+        shard_cases(cases, args.num_shards, args.shard)
+        if args.num_shards > 1:
+            args.work_dir = args.work_dir / f"shard-{args.shard}"
         spec = resolve_baseline(args)
         if args.print_baseline_version and spec["kind"] != "release":
             raise ValueError("--print-baseline-version requires --baseline-version VERSION or latest")
         if args.print_baseline_id or args.print_baseline_version:
             print(spec.get("revision", spec.get("version")))
             return 0
+        original_affinity = os.sched_getaffinity(0) if platform.system() == "Linux" else None
         return run_benchmarks(args, spec)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"Performance harness error: {error}", file=sys.stderr)
         return 2
+    finally:
+        if original_affinity is not None:
+            os.sched_setaffinity(0, original_affinity)
 
 
 if __name__ == "__main__":

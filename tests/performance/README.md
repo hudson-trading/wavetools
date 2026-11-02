@@ -32,7 +32,7 @@ Git comparisons require that revision in local history; fetch it if the checkout
 is shallow. A baseline must support `wavecat --out`.
 
 Add `--gtkwave` to compare conversion against `fst2vcd -e` and `vcd2fst` on PATH.
-These additional comparisons are informational, not 5% regression gates. They
+These additional comparisons are informational, not regression gates. They
 use the same warm-ups and alternating order and record output file sizes.
 Generated outputs are checked with baseline wavediff outside timing.
 
@@ -80,21 +80,21 @@ from successful comparisons or conversions.
 GNU time measures command wall time and peak resident memory in KiB, including
 the tool's worker threads. Its elapsed-time resolution is 0.01 seconds, so use
 large workloads; zero-duration samples are rejected. For **each case and each
-metric**, compare the arithmetic mean across measured runs. If the checkout's
-mean exceeds the baseline mean by **more than 5%**, the harness reports FAIL and
+metric**, compare arithmetic means across measured runs. If the mean increases
+by **more than 5%**, the harness reports FAIL and
 returns exit status 1. It never averages away a failure across cases. Setup,
 command, validation, and timeout failures return 2. The per-command timeout is
 600 seconds, configurable with `--timeout`.
 
 This measures warm-cache conversion to buffered files, including file close but
 without an explicit fsync. It does not measure cold storage or durable write
-throughput. Shared GitHub runners can be noisy at a 5% threshold; inspect raw
+throughput. Shared GitHub runners can still produce noisy results; inspect raw
 samples and rerun suspected noisy failures.
 
 The final table shows baseline and current means, percentage changes, and pass/fail
 for each case. Negative changes are better (faster or less memory); positive
-changes are worse (slower or more memory). A positive change fails only when it
-exceeds 5%. The threshold is not relaxed for CI.
+changes are worse (slower or more memory). A case fails if either runtime or memory exceeds the mean regression limit.
+The same limits apply locally and in CI.
 Use an otherwise idle machine for local comparisons.
 
 `target/performance/results.json` contains individual samples, averages, growth
@@ -130,7 +130,7 @@ python3 tests/performance/run.py --baseline-self-check --work-dir target/perform
 ```
 
 This skips building the checkout but keeps the same workloads, warm-ups,
-alternating execution order, measurements, and 5% threshold. Any reported
+alternating execution order, measurements, and 5% mean threshold. Any reported
 regression in this mode is a false positive caused by measurement variability.
 Use a separate work directory to preserve the original comparison report.
 
@@ -139,3 +139,29 @@ Use a separate work directory to preserve the original comparison report.
 Use `--current-bin /path/to/release` to benchmark separately built binaries.
 This skips building current binaries and records their directory in the report;
 the caller is responsible for their freshness and release profile.
+
+## CPU placement and shards
+
+By default, after building, the harness pins itself and its child processes to
+up to three physical cores sharing an L3 cache. Selection respects inherited CPU
+affinity and avoids SMT siblings when topology is available. If L3 information
+is unavailable, it chooses cores within one NUMA node, then from the allowed CPU
+set. This constrains CPU placement, not memory policy or exclusive CPU access.
+Use `--no-pin` to retain inherited affinity. The report records the original and
+selected CPUs and the topology selection method. Console output and JSON also
+list cache-sharing neighbors at every available level (L1/L2/L3), restricted to
+the inherited affinity, and identify which CPUs are used for benchmarks.
+
+`--num-shards N --shard I` selects zero-based shard I, assigning cases round-robin.
+N must be between one and the number of enabled cases. Each shard generates its
+own inputs and reports under `<work-dir>/shard-I/` when N is greater than one.
+For example, `--num-shards 5 --shard 1` runs only the VCD wavediff case.
+Use separate checkouts for concurrent local jobs: the baseline build/cache is
+shared within a checkout. For comparable measurements, avoid running shards
+concurrently on the same CPUs.
+
+`--print-shard-matrix` emits a JSON matrix with one case per job without building
+or resolving a baseline. GitHub Actions uses this to discover its matrix,
+currently five jobs, with separate report artifacts for each shard. New cases
+are included automatically; `--gtkwave` includes the optional converter cases in
+local matrix discovery and sharding.

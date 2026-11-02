@@ -20,6 +20,93 @@ OLDER_RELEASE = "1.2.2"
 
 
 class HarnessTests(unittest.TestCase):
+    def test_cpu_selection_respects_affinity_and_avoids_smt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            system = Path(directory)
+            for cpu in range(8):
+                files = {
+                    "topology/physical_package_id": "0",
+                    "topology/core_id": str(cpu % 4),
+                    "cache/index7/level": "3",
+                    "cache/index7/shared_cpu_list": "0-1,4-5" if cpu % 4 < 2 else "2-3,6-7",
+                }
+                for suffix, value in files.items():
+                    path = system / "cpu" / f"cpu{cpu}" / suffix
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(value)
+            selected, info = harness.select_cpus(set(range(8)), system)
+            self.assertEqual(selected, [0, 1])
+            self.assertEqual(info["source"], "L3")
+            selected, _ = harness.select_cpus({4, 5, 6}, system)
+            self.assertEqual(selected, [4, 5])
+
+    def test_cpu_selection_falls_back_to_numa_then_allowed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            system = Path(directory)
+            node = system / "node/node0/cpulist"
+            node.parent.mkdir(parents=True)
+            node.write_text("0-5")
+            selected, info = harness.select_cpus({2, 3, 4, 5, 8}, system)
+            self.assertEqual(selected, [2, 3, 4])
+            self.assertEqual(info["source"], "NUMA")
+            node.unlink()
+            selected, info = harness.select_cpus({4, 8}, system)
+            self.assertEqual(selected, [4, 8])
+            self.assertEqual(info["source"], "allowed CPUs")
+
+    def test_cache_neighbors_include_levels_and_deduplicate_shared_caches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            system = Path(directory)
+            for cpu in (0, 1):
+                for level, cpus in ((1, str(cpu)), (2, "0-3"), (3, "0-7")):
+                    cache = system / "cpu" / f"cpu{cpu}" / "cache" / f"index{level}"
+                    cache.mkdir(parents=True)
+                    (cache / "level").write_text(str(level))
+                    (cache / "type").write_text("Unified")
+                    (cache / "shared_cpu_list").write_text(cpus)
+            groups = harness.cache_neighbors({0, 1}, system)
+            self.assertEqual(groups, [
+                {"level": 1, "type": "Unified", "cpus": [0]},
+                {"level": 1, "type": "Unified", "cpus": [1]},
+                {"level": 2, "type": "Unified", "cpus": [0, 1]},
+                {"level": 3, "type": "Unified", "cpus": [0, 1]},
+            ])
+            self.assertEqual(harness.cache_neighbors({9}, system), [])
+
+    def test_pin_opt_out_and_selection(self):
+        with patch.object(harness.os, "sched_getaffinity", return_value={1, 2, 3, 4}), \
+             patch.object(harness, "cache_neighbors", return_value=[]), \
+             patch.object(harness.os, "sched_setaffinity") as apply, \
+             patch.object(harness, "select_cpus", return_value=([2, 3], {"source": "L3"})) as select:
+            report = harness.pin_cpus(True)
+            apply.assert_not_called()
+            select.assert_not_called()
+            self.assertFalse(report["enabled"])
+            report = harness.pin_cpus(False)
+            apply.assert_called_once_with(0, [2, 3])
+            self.assertEqual(report["allowed_cpus"], [1, 2, 3, 4])
+
+    def test_shards_cover_every_case_once(self):
+        for gtkwave in (False, True):
+            cases = harness.benchmark_cases(Path("unused"), gtkwave)
+            for count in range(1, len(cases) + 1):
+                shards = [harness.shard_cases(cases, count, i) for i in range(count)]
+                self.assertTrue(all(shards))
+                self.assertCountEqual([c for shard in shards for c in shard], cases)
+            for count, index in ((0, 0), (len(cases) + 1, 0), (2, -1), (2, 2)):
+                with self.assertRaises(ValueError):
+                    harness.shard_cases(cases, count, index)
+
+    def test_matrix_discovery_does_not_build_or_resolve_baseline(self):
+        with patch.object(harness.sys, "argv", ["run.py", "--print-shard-matrix"]), \
+             patch.object(harness, "resolve_baseline") as resolve, \
+             patch("builtins.print") as output:
+            self.assertEqual(harness.main(), 0)
+            resolve.assert_not_called()
+            matrix = json.loads(output.call_args.args[0])["include"]
+            self.assertEqual(len(matrix), len(harness.benchmark_cases(Path("unused"))))
+            self.assertEqual([row["shard"] for row in matrix], list(range(len(matrix))))
+
     def test_validation_failure_retains_stdout_and_stderr(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "validation.stderr"
@@ -40,7 +127,8 @@ class HarnessTests(unittest.TestCase):
                 (binaries / tool).write_bytes(b"binary")
             args = argparse.Namespace(work_dir=root / "results", skip_build=False,
                 baseline_self_check=False, current_bin=None, gtkwave=False,
-                runs=1, size_mib=1, signals=1, seed=1, timeout=5)
+                runs=1, size_mib=1, signals=1, seed=1, timeout=5,
+                num_shards=1, shard=0, no_pin=True)
             with patch.object(harness, "ROOT", root), \
                  patch.object(harness, "MAX_INCREASE", 0.125), \
                  patch.dict(harness.os.environ, {"CARGO_TARGET_DIR": str(root / "elsewhere")}), \
@@ -57,19 +145,20 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(report["current_bin"], str(binaries))
             self.assertEqual(report["regression_limit_percent"], 12.5)
 
-    def test_threshold_is_per_metric_and_strictly_over_five_percent(self):
-        samples = {
-            "baseline": [{"seconds": 100, "peak_rss_kib": 100}] * 2,
-            "current": [{"seconds": 104, "peak_rss_kib": 105},
-                        {"seconds": 106, "peak_rss_kib": 105}],
-        }
-        self.assertFalse(any(m["failed"] for m in harness.compare(samples).values()))
-        samples["current"][1] = {"seconds": 107, "peak_rss_kib": 103}
-        metrics = harness.compare(samples)
-        self.assertTrue(metrics["seconds"]["failed"])
-        self.assertFalse(metrics["peak_rss_kib"]["failed"])
-        samples["current"] = [{"seconds": 90, "peak_rss_kib": 106}]
-        self.assertTrue(harness.compare(samples)["peak_rss_kib"]["failed"])
+    def test_mean_limit_is_strict_and_applies_to_each_metric(self):
+        for values, failed in [([105] * 5, False), ([106] * 5, True),
+                               ([100, 100, 100, 100, 126], True)]:
+            for metric in ("seconds", "peak_rss_kib"):
+                samples = {
+                    "baseline": [{"seconds": 100, "peak_rss_kib": 100}] * 5,
+                    "current": [{"seconds": 100, "peak_rss_kib": 100} for _ in values],
+                }
+                for sample, value in zip(samples["current"], values):
+                    sample[metric] = value
+                result = harness.compare(samples)
+                self.assertEqual(result[metric]["failed"], failed)
+                other = "seconds" if metric == "peak_rss_kib" else "peak_rss_kib"
+                self.assertFalse(result[other]["failed"])
 
     def test_summary_explains_signs_and_reports_memory_regressions(self):
         report = {"cases": {}}
