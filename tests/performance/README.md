@@ -111,7 +111,7 @@ manual runs with configurable repetitions, size, and baseline revision or releas
 every invocation. Git history is fetched for revision baselines. JSON results and stderr diagnostics are uploaded even when
 comparisons fail. Installation and build happen in the same job before timing.
 
-The CI Python test job runs `python -m pytest tests` once before benchmark shards,
+The main CI workflow runs `python -m pytest tests` alongside the Rust build job,
 discovering both pytest and unittest tests throughout `tests/`.
 
 Run the harness unit tests without network access:
