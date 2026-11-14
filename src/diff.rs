@@ -84,7 +84,7 @@ impl OwnedSignalValue {
     fn approx_eq(&self, other: &Self, real_epsilon: Option<f64>, use_real_epsilon: bool) -> bool {
         match (self, other, real_epsilon.filter(|_| use_real_epsilon)) {
             (OwnedSignalValue::Real(a), OwnedSignalValue::Real(b), Some(eps)) => {
-                (a - b).abs() <= eps
+                a == b || (a - b).abs() <= eps
             }
             (_, _, Some(eps)) => {
                 // VCD stores reals as strings; try numeric comparison.
@@ -823,6 +823,69 @@ pub fn open_and_read_wave_sets(
 mod tests {
     use super::*;
     use crate::{SignalInfo, VarEntry, VarMeta, IMPLICIT_DIRECTION};
+
+    #[test]
+    fn equal_infinite_reals_match_with_epsilon() {
+        for value in [f64::INFINITY, f64::NEG_INFINITY] {
+            let left = OwnedSignalValue::from_fst_value(FstSignalValue::Real(value));
+            let right = OwnedSignalValue::from_fst_value(FstSignalValue::Real(value));
+            assert_eq!(left, right);
+            for epsilon in [0.0, 0.001] {
+                assert!(left.approx_eq(&right, Some(epsilon), true));
+            }
+        }
+    }
+
+    #[test]
+    fn real_epsilon_keeps_distinct_non_finite_values_distinct() {
+        for (left, right) in [
+            (f64::INFINITY, f64::NEG_INFINITY),
+            (f64::INFINITY, 0.0),
+            (f64::NAN, f64::NAN),
+            (f64::NAN, f64::INFINITY),
+        ] {
+            assert!(!OwnedSignalValue::Real(left).approx_eq(
+                &OwnedSignalValue::Real(right),
+                Some(0.001),
+                true,
+            ));
+        }
+    }
+
+    #[test]
+    fn channel_comparison_preserves_equal_infinite_reals() {
+        let (_, hierarchy) = crate::open_wave_file(
+            Path::new("tests/data/real_base.fst"),
+            &NameOptions::default(),
+        )
+        .unwrap();
+        for value in [f64::INFINITY, f64::NEG_INFINITY] {
+            let (tx1, rx1) = channel::unbounded();
+            let (tx2, rx2) = channel::unbounded();
+            for tx in [tx1, tx2] {
+                tx.send(TimeBatch {
+                    time: 0,
+                    changes: vec![SignalChange {
+                        handle: 0,
+                        value: OwnedSignalValue::from_fst_value(FstSignalValue::Real(value)),
+                    }],
+                })
+                .unwrap();
+            }
+            let mut output = Vec::new();
+            assert!(!compare_signal_channels(
+                &mut output,
+                rx1,
+                rx2,
+                &HashMap::from([(0, vec![0])]),
+                &hierarchy,
+                &hierarchy,
+                Some(0.001),
+            )
+            .unwrap());
+            assert!(output.is_empty());
+        }
+    }
 
     fn signal_map(handles: &[usize]) -> SignalMap {
         handles
