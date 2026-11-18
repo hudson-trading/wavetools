@@ -158,7 +158,9 @@ text listing.
 
 Compare two waveform files and report differences. Supports any combination of
 FST and VCD files (e.g. comparing an FST against a VCD). Multiple files can be
-combined into each side using `--set1` and `--set2`.
+combined into each side using `--set1` and `--set2`. All inputs must use the
+same duration per tick. Files with mismatched timescales produce an error.
+A VCD with no declared timescale is interpreted as 1 ns per tick.
 
 ### Usage
 

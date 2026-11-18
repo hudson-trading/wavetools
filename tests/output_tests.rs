@@ -155,6 +155,56 @@ fn real_string_and_top_level_vcd() {
 }
 
 #[test]
+fn diff_rejects_identical_tick_numbers_with_different_timescales() {
+    let temp = Temp::new();
+    let first = temp.input("$timescale 1 ns $end\n$var wire 1 ! order_valid $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n");
+    let second = temp.path("other.vcd");
+    fs::write(
+        &second,
+        fs::read_to_string(&first).unwrap().replace("1 ns", "1 ps"),
+    )
+    .unwrap();
+
+    let result = diff(&[&first, &second]);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("different timescales"));
+}
+
+#[test]
+fn diff_checks_timescales_across_fst_and_vcd() {
+    let temp = Temp::new();
+    let input = temp.input("$timescale 10 ps $end\n$var wire 1 ! order_valid $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n");
+    let fst = temp.path("trace.fst");
+    success(cat(&[&input, "-o", &fst]));
+    success(diff(&[&input, &fst]));
+
+    fs::write(
+        &input,
+        fs::read_to_string(&input).unwrap().replace("10 ps", "1 ns"),
+    )
+    .unwrap();
+    let error = diff(&[&input, &fst]);
+    assert_eq!(error.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&error.stderr).contains("10^-9 s and 10^-11 s per tick"));
+}
+
+#[test]
+fn diff_rejects_mixed_timescales_within_an_overlay() {
+    let temp = Temp::new();
+    let input = temp.input("$timescale 1 ns $end\n$var wire 1 ! order_valid $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n");
+    let extra = temp.path("extra.vcd");
+    fs::write(
+        &extra,
+        "$timescale 1 ps $end\n$var wire 1 ! quote_valid $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n",
+    )
+    .unwrap();
+
+    let error = diff(&["--set1", &input, "--set1", &extra, "--set2", &input]);
+    assert_eq!(error.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&error.stderr).contains("different timescales"));
+}
+
+#[test]
 fn mismatched_timescales_and_same_file_are_rejected() {
     let temp = Temp::new();
     let text = "$timescale 1 ps $end\n$var wire 1 ! other $end\n$enddefinitions $end\n#0\n1!\n";
