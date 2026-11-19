@@ -27,7 +27,7 @@ fn is_real(t: &str) -> bool {
     matches!(t, "real" | "realtime" | "shortreal" | "real_parameter")
 }
 
-fn timescale(reader: &WaveReader) -> io::Result<i8> {
+pub(crate) fn timescale(reader: &WaveReader) -> io::Result<i8> {
     match reader {
         WaveReader::Fst(r) => Ok(r.get_header().timescale_exponent),
         WaveReader::Vcd(r) => {

@@ -743,6 +743,19 @@ pub fn diff_wave_sets<W: Write>(
     sets: WaveSets,
     options: &DiffOptions,
 ) -> std::io::Result<bool> {
+    let mut readers = sets.readers1.iter().chain(&sets.readers2);
+    if let Some(first) = readers.next() {
+        let exponent = crate::output::timescale(first)?;
+        for reader in readers {
+            let other = crate::output::timescale(reader)?;
+            if other != exponent {
+                return Err(io::Error::other(format!(
+                    "Cannot compare waveforms with different timescales (10^{exponent} s and 10^{other} s per tick)"
+                )));
+            }
+        }
+    }
+
     let handle_mapping = build_handle_mapping(
         &sets.hier1.signal_map,
         &sets.hier1.names,
