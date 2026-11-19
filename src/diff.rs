@@ -745,9 +745,9 @@ pub fn diff_wave_sets<W: Write>(
 ) -> std::io::Result<bool> {
     let mut readers = sets.readers1.iter().chain(&sets.readers2);
     if let Some(first) = readers.next() {
-        let exponent = first.timescale_exponent()?;
+        let exponent = crate::output::timescale(first)?;
         for reader in readers {
-            let other = reader.timescale_exponent()?;
+            let other = crate::output::timescale(reader)?;
             if other != exponent {
                 return Err(io::Error::other(format!(
                     "Cannot compare waveforms with different timescales (10^{exponent} s and 10^{other} s per tick)"

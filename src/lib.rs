@@ -26,7 +26,7 @@ use fst_reader::{
 };
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Seek, Write};
+use std::io::{BufRead, BufReader, Seek, Write};
 use std::path::Path;
 
 /// Mapping from signal handle indices to their fully qualified hierarchical names
@@ -576,27 +576,6 @@ pub struct VcdData {
 pub enum WaveReader {
     Fst(Box<FstFileReader>),
     Vcd(VcdData),
-}
-
-impl WaveReader {
-    pub(crate) fn timescale_exponent(&self) -> io::Result<i8> {
-        match self {
-            WaveReader::Fst(r) => Ok(r.get_header().timescale_exponent),
-            WaveReader::Vcd(r) => {
-                let Some((factor, unit)) = r.header.timescale else {
-                    // An undeclared VCD timescale defaults to 1 ns.
-                    return Ok(-9);
-                };
-                let power = match factor {
-                    1 => 0,
-                    10 => 1,
-                    100 => 2,
-                    _ => return Err(io::Error::other("Unsupported VCD timescale multiplier")),
-                };
-                Ok(power - unit.divisor().ilog10() as i8)
-            }
-        }
-    }
 }
 
 /// Convert a VCD scalar Value to its character representation

@@ -12,6 +12,9 @@ use std::{
 
 // Flush buffered FST changes after approximately 64 MiB, at a time boundary.
 const FST_FLUSH_THRESHOLD_BYTES: usize = 64 * 1024 * 1024;
+// VCD files without a declared timescale are interpreted as 1 ns.
+const DEFAULT_TIMESCALE_EXPONENT: i8 = -9;
+
 type VcdWriter = vcd::Writer<BufWriter<File>>;
 const VCD_OUTPUT_BUFFER_BYTES: usize = 2 * 1024 * 1024;
 type FstWriter = FstBodyWriter<BufWriter<File>>;
@@ -22,6 +25,24 @@ fn err(e: impl std::fmt::Display) -> io::Error {
 
 fn is_real(t: &str) -> bool {
     matches!(t, "real" | "realtime" | "shortreal" | "real_parameter")
+}
+
+pub(crate) fn timescale(reader: &WaveReader) -> io::Result<i8> {
+    match reader {
+        WaveReader::Fst(r) => Ok(r.get_header().timescale_exponent),
+        WaveReader::Vcd(r) => {
+            let Some((factor, unit)) = r.header.timescale else {
+                return Ok(DEFAULT_TIMESCALE_EXPONENT);
+            };
+            let power = match factor {
+                1 => 0,
+                10 => 1,
+                100 => 2,
+                _ => return Err(err("Unsupported VCD timescale multiplier")),
+            };
+            Ok(power - unit.divisor().ilog10() as i8)
+        }
+    }
 }
 
 fn vcd_timescale(exponent: i8) -> io::Result<(u32, vcd::TimescaleUnit)> {
@@ -356,9 +377,9 @@ pub fn write_wave_file(
     if end.is_some_and(|end| start > end) {
         return Err(err("Start time exceeds end time"));
     }
-    let exponent = readers[0].timescale_exponent()?;
+    let exponent = timescale(&readers[0])?;
     for reader in &readers[1..] {
-        if reader.timescale_exponent()? != exponent {
+        if timescale(reader)? != exponent {
             return Err(err("Cannot export an overlay with different timescales"));
         }
     }
