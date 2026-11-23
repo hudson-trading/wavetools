@@ -171,6 +171,31 @@ fn test_edge_time_diff() {
 }
 
 #[test]
+fn test_repeated_changes_match_themselves() {
+    let (has_diff, output) = run_wave_diff_test(
+        "tests/data/repeated_changes.vcd",
+        "tests/data/repeated_changes.vcd",
+    );
+    assert!(
+        !has_diff,
+        "a file with repeated changes should match itself: {output}"
+    );
+}
+
+#[test]
+fn test_repeated_changes_compared_in_order() {
+    let (has_diff, output) = run_wave_diff_test(
+        "tests/data/repeated_changes.vcd",
+        "tests/data/repeated_changes_glitch.vcd",
+    );
+    assert!(has_diff);
+    assert_eq!(
+        output, "10 t.a 0 != 1\n10 t.b [3:0] 0010 (only in file2)\n",
+        "the nth change at a time should be compared with the nth change"
+    );
+}
+
+#[test]
 fn test_buffered_file2_only_diffs_are_sorted() {
     let (has_diff, output) = run_wave_diff_test(
         "tests/data/buffered_file2_base.vcd",

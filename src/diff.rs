@@ -444,11 +444,15 @@ fn compare_signal_channels<W: Write>(
                                         saw_time_in_source2 = true;
                                     }
                                     for c in batch2.changes {
+                                        // The first change may already have been matched and
+                                        // evicted while later ones are left: keep the order.
                                         match buffered2.entry((t2, c.handle)) {
-                                            Entry::Vacant(entry) => {
+                                            Entry::Vacant(entry)
+                                                if !repeated2.contains_key(&(t2, c.handle)) =>
+                                            {
                                                 entry.insert(c.value);
                                             }
-                                            Entry::Occupied(_) => repeated2
+                                            _ => repeated2
                                                 .entry((t2, c.handle))
                                                 .or_default()
                                                 .push(c.value),
@@ -1030,6 +1034,50 @@ mod tests {
             assert_eq!(has_differences, !expected.is_empty());
             assert_eq!(String::from_utf8(output).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn leftover_repeated_values_keep_their_order_across_batches() {
+        let (_, hierarchy) =
+            crate::open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default())
+                .unwrap();
+        let name = hierarchy
+            .names
+            .format_path(hierarchy.signal_map[&0].vars[0].name);
+        let change = |value: &[u8]| SignalChange {
+            handle: 0,
+            value: OwnedSignalValue::String(value.to_vec()),
+        };
+        let (tx1, rx1) = channel::unbounded();
+        let (tx2, rx2) = channel::unbounded();
+        for time in [0, 1] {
+            tx1.send(TimeBatch {
+                time,
+                changes: vec![change(b"0")],
+            })
+            .unwrap();
+        }
+        // A full batch of changes at time 0, then one more at time 0 in the next batch.
+        let mut first = vec![change(b"0")];
+        first.extend((1..BATCH_SIZE).map(|_| change(b"1")));
+        for (time, changes) in [(0, first), (0, vec![change(b"x")]), (1, vec![change(b"0")])] {
+            tx2.send(TimeBatch { time, changes }).unwrap();
+        }
+        drop((tx1, tx2));
+        let mut output = Vec::new();
+        assert!(compare_signal_channels(
+            &mut output,
+            rx1,
+            rx2,
+            &HashMap::from([(0, vec![0])]),
+            &hierarchy,
+            &hierarchy,
+            None,
+        )
+        .unwrap());
+        let mut expected = format!("0 {name} 1 (only in file2)\n").repeat(BATCH_SIZE - 1);
+        expected.push_str(&format!("0 {name} x (only in file2)\n"));
+        assert_eq!(String::from_utf8(output).unwrap(), expected);
     }
 
     #[test]
