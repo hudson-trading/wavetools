@@ -743,15 +743,38 @@ pub fn diff_wave_sets<W: Write>(
     sets: WaveSets,
     options: &DiffOptions,
 ) -> std::io::Result<bool> {
+    diff_wave_sets_with_timescale(writer, sets, options, None)
+}
+
+/// Compare waveform sets with an optional common tick duration of 10^exponent seconds.
+/// An override interprets raw ticks in that unit without rescaling timestamp values.
+pub fn diff_wave_sets_with_timescale<W: Write>(
+    writer: &mut W,
+    sets: WaveSets,
+    options: &DiffOptions,
+    timescale: Option<i8>,
+) -> io::Result<bool> {
+    let effective_timescale = |reader: &WaveReader| match (timescale, reader) {
+        (Some(exponent), _) => Ok(Some(exponent)),
+        (None, WaveReader::Vcd(vcd)) if vcd.header.timescale.is_none() => Ok(None),
+        (None, _) => crate::output::timescale(reader).map(Some),
+    };
     let mut readers = sets.readers1.iter().chain(&sets.readers2);
     if let Some(first) = readers.next() {
-        let exponent = crate::output::timescale(first)?;
+        let exponent = effective_timescale(first)?;
         for reader in readers {
-            let other = crate::output::timescale(reader)?;
-            if other != exponent {
-                return Err(io::Error::other(format!(
-                    "Cannot compare waveforms with different timescales (10^{exponent} s and 10^{other} s per tick)"
-                )));
+            match (exponent, effective_timescale(reader)?) {
+                (Some(a), Some(b)) if a != b => {
+                    return Err(io::Error::other(format!(
+                        "Cannot compare waveforms with different timescales (10^{a} s and 10^{b} s per tick); use --timescale to override"
+                    )));
+                }
+                (Some(_), None) | (None, Some(_)) => {
+                    return Err(io::Error::other(
+                        "Cannot compare declared and missing timescales; use --timescale to specify a common tick duration",
+                    ));
+                }
+                _ => {}
             }
         }
     }

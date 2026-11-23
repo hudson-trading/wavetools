@@ -159,8 +159,11 @@ text listing.
 Compare two waveform files and report differences. Supports any combination of
 FST and VCD files (e.g. comparing an FST against a VCD). Multiple files can be
 combined into each side using `--set1` and `--set2`. All inputs must use the
-same duration per tick. Files with mismatched timescales produce an error.
-A VCD with no declared timescale is interpreted as 1 ns per tick.
+same duration per tick. When no input declares a timescale, comparison uses raw
+tick numbers. Mixing declared and missing timescales or conflicting declarations
+requires `--timescale`. The override applies to all inputs, including overlays.
+It assigns a common unit without rescaling timestamps. Comparison bounds still
+use tick numbers.
 
 ### Usage
 
@@ -179,6 +182,7 @@ they are included in their respective sets.
 | `-s, --start <TIME>` | Start time for comparison |
 | `-e, --end <TIME>` | End time for comparison |
 | `--epsilon <VALUE>` | Epsilon for comparing real-valued signals (absolute tolerance) |
+| `--timescale <UNIT>` | Supply or override the timescale for all inputs (e.g. `10ps`) |
 | `--no-attrs` | Skip metadata comparison (type, size, direction, attributes) |
 | `--set1 <FILE>` | File(s) for set 1; may be specified multiple times |
 | `--set2 <FILE>` | File(s) for set 2; may be specified multiple times |
