@@ -10,7 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{self, BufRead, Seek, Write};
 use std::path::Path;
-use std::sync::Arc;
 
 use crossbeam_channel as channel;
 use fst_reader::{FstFilter, FstSignalHandle, FstSignalValue};
@@ -119,6 +118,39 @@ fn is_real_var_type(var_type: &str) -> bool {
 fn handle_is_real(map: &SignalMap, handle: usize) -> bool {
     map.get(&handle)
         .is_some_and(|info| info.vars.iter().any(|v| is_real_var_type(v.meta.var_type)))
+}
+
+/// Whether every variable on `handle` is a four-state vector, not a real or a string.
+fn handle_is_vector(map: &SignalMap, handle: usize) -> bool {
+    map.get(&handle).is_some_and(|info| {
+        info.vars
+            .iter()
+            .all(|v| !is_real_var_type(v.meta.var_type) && v.meta.var_type != "string")
+    })
+}
+
+/// Compare vector values of different lengths as the VCD format defines them:
+/// the shorter one is extended on the left, with 0 if it starts with 0 or 1
+/// and with x or z if it starts with that (as the FST writer does). Values of
+/// the same length are left to the plain comparison.
+fn extended_vectors_eq(a: &OwnedSignalValue, b: &OwnedSignalValue) -> bool {
+    let (OwnedSignalValue::String(a), OwnedSignalValue::String(b)) = (a, b) else {
+        return false;
+    };
+    if a.len() == b.len() {
+        return false;
+    }
+    let (short, long) = if a.len() < b.len() { (a, b) } else { (b, a) };
+    let Some(&first) = short.first() else {
+        return false;
+    };
+    let fill = if matches!(first, b'x' | b'z') {
+        first
+    } else {
+        b'0'
+    };
+    let (extension, rest) = long.split_at(long.len() - short.len());
+    rest == short.as_slice() && extension.iter().all(|&c| c == fill)
 }
 
 fn handles_are_real(
@@ -412,6 +444,9 @@ fn compare_signal_channels<W: Write>(
                         if !change1
                             .value
                             .approx_eq(value2, real_epsilon, use_real_epsilon)
+                            && !(extended_vectors_eq(&change1.value, value2)
+                                && handle_is_vector(&hier1.signal_map, change1.handle)
+                                && handle_is_vector(&hier2.signal_map, handle2))
                         {
                             has_differences = true;
                             emit_value_diff(
@@ -491,43 +526,12 @@ fn compare_signal_channels<W: Write>(
     Ok(has_differences)
 }
 
-/// Declared widths of the four-state signals by handle, for extending short VCD
-/// vectors. Real and string signals get 0, so their values are left alone.
-fn vector_widths(map: &SignalMap) -> Arc<[u32]> {
-    let mut widths = vec![0; map.keys().max().map_or(0, |&handle| handle + 1)];
-    for (&handle, info) in map {
-        let meta = &info.vars[0].meta;
-        if !is_real_var_type(meta.var_type) && meta.var_type != "string" {
-            widths[handle] = meta.size;
-        }
-    }
-    widths.into()
-}
-
-/// Extend a VCD vector shorter than its declared width, as the VCD format
-/// specifies (and the FST writer does): 0 and 1 extend with 0, x and z with
-/// themselves.
-fn extend_vcd_vector(value: &mut Vec<u8>, width: u32) {
-    let width = width as usize;
-    if let Some(&first) = value.first() {
-        if value.len() < width {
-            let fill = if matches!(first, b'x' | b'z') {
-                first
-            } else {
-                b'0'
-            };
-            value.splice(0..0, std::iter::repeat_n(fill, width - value.len()));
-        }
-    }
-}
-
 /// Send all signal changes from a WaveReader through a channel, applying time filtering.
 /// `handle_offset` is added to each handle index (used for merged sets).
 fn send_wave_changes(
     reader: WaveReader,
     handle_offset: usize,
     include: Option<HashSet<usize>>,
-    widths: &[u32],
     start: u64,
     end: Option<u64>,
     tx: channel::Sender<TimeBatch>,
@@ -569,12 +573,9 @@ fn send_wave_changes(
                     flush_batch(&tx, batch_time, &mut batch);
                 }
                 batch_time = time;
-                let handle = handle + handle_offset;
-                let mut value = value_str.into_bytes();
-                extend_vcd_vector(&mut value, widths.get(handle).copied().unwrap_or(0));
                 batch.push(SignalChange {
-                    handle,
-                    value: OwnedSignalValue::String(value),
+                    handle: handle + handle_offset,
+                    value: OwnedSignalValue::String(value_str.into_bytes()),
                 });
             }
             if !batch.is_empty() {
@@ -596,7 +597,6 @@ fn send_merged_wave_changes(
     readers: Vec<WaveReader>,
     offsets: &[usize],
     include_sets: Option<Vec<HashSet<usize>>>,
-    widths: Arc<[u32]>,
     start: u64,
     end: Option<u64>,
     tx: channel::Sender<TimeBatch>,
@@ -611,7 +611,6 @@ fn send_merged_wave_changes(
             readers.into_iter().next().unwrap(),
             offsets[0],
             include_sets.and_then(|sets| sets.into_iter().next()),
-            &widths,
             start,
             end,
             tx,
@@ -626,9 +625,8 @@ fn send_merged_wave_changes(
     for (reader, &offset) in readers.into_iter().zip(offsets.iter()) {
         let include = include_sets.as_mut().and_then(|sets| sets.next());
         let (inner_tx, inner_rx) = channel::bounded(CHANNEL_BOUND);
-        let widths = Arc::clone(&widths);
         threads.push(std::thread::spawn(move || {
-            send_wave_changes(reader, offset, include, &widths, start, end, inner_tx)
+            send_wave_changes(reader, offset, include, start, end, inner_tx)
         }));
         inner_rxs.push(inner_rx);
     }
@@ -805,14 +803,12 @@ pub fn diff_wave_sets<W: Write>(
     let source_signal_count2 = readers2.iter().map(reader_signal_count).sum();
     let include_sets1 = reader_include_sets(&hier1.signal_map, &offsets1, source_signal_count1);
     let include_sets2 = reader_include_sets(&hier2.signal_map, &offsets2, source_signal_count2);
-    let widths1 = vector_widths(&hier1.signal_map);
-    let widths2 = vector_widths(&hier2.signal_map);
 
     let thread1 = std::thread::spawn(move || {
-        send_merged_wave_changes(readers1, &offsets1, include_sets1, widths1, start, end, tx1)
+        send_merged_wave_changes(readers1, &offsets1, include_sets1, start, end, tx1)
     });
     let thread2 = std::thread::spawn(move || {
-        send_merged_wave_changes(readers2, &offsets2, include_sets2, widths2, start, end, tx2)
+        send_merged_wave_changes(readers2, &offsets2, include_sets2, start, end, tx2)
     });
 
     let result = compare_signal_channels(
@@ -983,6 +979,20 @@ mod tests {
         )
         .unwrap());
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn short_vectors_match_their_extension() {
+        let v = |s: &str| OwnedSignalValue::String(s.as_bytes().to_vec());
+        assert!(extended_vectors_eq(&v("10"), &v("0010")));
+        assert!(extended_vectors_eq(&v("0010"), &v("10")));
+        assert!(extended_vectors_eq(&v("x1"), &v("xxx1")));
+        assert!(extended_vectors_eq(&v("z"), &v("zzzz")));
+        assert!(!extended_vectors_eq(&v("10"), &v("1010")));
+        assert!(!extended_vectors_eq(&v("x1"), &v("00x1")));
+        assert!(!extended_vectors_eq(&v("10"), &v("10")));
+        assert!(!extended_vectors_eq(&v(""), &v("0")));
+        assert!(!extended_vectors_eq(&v("1"), &OwnedSignalValue::Real(1.0)));
     }
 
     #[test]
