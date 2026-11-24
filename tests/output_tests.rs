@@ -146,12 +146,109 @@ fn real_string_and_top_level_vcd() {
     success(cat(&["tests/data/wide_bits.vcd", "-o", &out]));
     success(diff(&["tests/data/wide_bits.vcd", &out]));
     success(cat(&[&input, "-o", &out]));
-    success(diff(&[&input, &out]));
+    success(diff(&["--timescale", "1ns", &input, &out]));
     let out = temp.path("out.fst");
     let error = cat(&[&input, "-o", &out]);
     assert!(!error.status.success());
     assert!(String::from_utf8_lossy(&error.stderr).contains("does not support"));
     assert!(!std::path::Path::new(&out).exists());
+}
+
+#[test]
+fn diff_rejects_identical_tick_numbers_with_different_timescales() {
+    let temp = Temp::new();
+    let first = temp.input("$timescale 1 ns $end\n$var wire 1 ! order_valid $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n");
+    let second = temp.path("other.vcd");
+    fs::write(
+        &second,
+        fs::read_to_string(&first).unwrap().replace("1 ns", "1 ps"),
+    )
+    .unwrap();
+
+    let result = diff(&[&first, &second]);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("different timescales"));
+}
+
+#[test]
+fn diff_checks_timescales_across_fst_and_vcd() {
+    let temp = Temp::new();
+    let input = temp.input("$timescale 10 ps $end\n$var wire 1 ! order_valid $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n");
+    let fst = temp.path("trace.fst");
+    success(cat(&[&input, "-o", &fst]));
+    success(diff(&[&input, &fst]));
+
+    fs::write(
+        &input,
+        fs::read_to_string(&input).unwrap().replace("10 ps", "1 ns"),
+    )
+    .unwrap();
+    let error = diff(&[&input, &fst]);
+    assert_eq!(error.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&error.stderr).contains("10^-9 s and 10^-11 s per tick"));
+    success(diff(&["--timescale", "10 ps", &input, &fst]));
+}
+
+#[test]
+fn diff_timescale_override_handles_missing_headers_without_rescaling() {
+    let temp = Temp::new();
+    let trace = "$var wire 1 ! order_valid $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n";
+    let missing = temp.input(trace);
+    let declared = temp.path("declared.vcd");
+    fs::write(&declared, trace).unwrap();
+    success(diff(&[&missing, &declared]));
+
+    fs::write(&declared, format!("$timescale 1 ns $end\n{trace}")).unwrap();
+    let error = diff(&[&missing, &declared]);
+    assert_eq!(error.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&error.stderr).contains("--timescale"));
+    success(diff(&["--timescale", "100fs", &missing, &declared]));
+
+    fs::write(
+        &declared,
+        format!("$timescale 1 ns $end\n{}", trace.replace("#10", "#11")),
+    )
+    .unwrap();
+    let different = diff(&["--timescale", "100fs", &missing, &declared]);
+    assert_eq!(different.status.code(), Some(1));
+}
+
+#[test]
+fn diff_rejects_invalid_timescale_overrides() {
+    let input = "tests/data/counter.vcd";
+    for value in ["0ns", "3ps", "1fortnight"] {
+        let error = diff(&["--timescale", value, input, input]);
+        assert_eq!(error.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&error.stderr).contains("--timescale"));
+    }
+}
+
+#[test]
+fn diff_rejects_mixed_timescales_within_an_overlay() {
+    let temp = Temp::new();
+    let input = temp.input("$timescale 1 ns $end\n$var wire 1 ! order_valid $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n");
+    let extra = temp.path("extra.vcd");
+    fs::write(
+        &extra,
+        "$timescale 1 ps $end\n$var wire 1 ! quote_valid $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n",
+    )
+    .unwrap();
+
+    let error = diff(&["--set1", &input, "--set1", &extra, "--set2", &input]);
+    success(diff(&[
+        "--timescale",
+        "1ns",
+        "--set1",
+        &input,
+        "--set1",
+        &extra,
+        "--set2",
+        &input,
+        "--set2",
+        &extra,
+    ]));
+    assert_eq!(error.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&error.stderr).contains("different timescales"));
 }
 
 #[test]
@@ -283,7 +380,14 @@ fn vcd_overlay_remaps_enum_table_ids() {
     let out = temp.path("out.vcd");
     success(cat(&[&inputs[0], &inputs[1], "-o", &out]));
     success(diff(&[
-        "--set1", &inputs[0], "--set1", &inputs[1], "--set2", &out,
+        "--timescale",
+        "1ns",
+        "--set1",
+        &inputs[0],
+        "--set1",
+        &inputs[1],
+        "--set2",
+        &out,
     ]));
     let text = fs::read_to_string(out).unwrap();
     assert!(text.contains("$attrbegin misc 07 \"\" 2 $end"));
@@ -314,7 +418,14 @@ fn filtering_keeps_attributes_with_their_variables() {
             success(cat(&[&input, "--filter", filter, "--attrs", "--sort"])),
             success(cat(&[&out, "--attrs", "--sort"]))
         );
-        success(diff(&[&input, &out, "--filter", filter]));
+        success(diff(&[
+            "--timescale",
+            "1ns",
+            &input,
+            &out,
+            "--filter",
+            filter,
+        ]));
     }
 }
 
@@ -327,7 +438,16 @@ fn top_level_overlay_does_not_transfer_attributes_between_files() {
     for inputs in [[&a, &b], [&b, &a]] {
         let out = temp.path("overlay.vcd");
         success(cat(&[inputs[0], inputs[1], "-o", &out]));
-        success(diff(&["--set1", &a, "--set1", &b, "--set2", &out]));
+        success(diff(&[
+            "--timescale",
+            "1ns",
+            "--set1",
+            &a,
+            "--set1",
+            &b,
+            "--set2",
+            &out,
+        ]));
     }
 }
 
@@ -414,7 +534,7 @@ fn vcd_initial_values_are_enclosed_in_dumpvars() {
             let text = fs::read_to_string(&out).unwrap();
             let body = text.split_once("$enddefinitions $end\n").unwrap().1;
             assert_eq!(body, format!("#{start}\n$dumpvars\n0!\n$end\n{later}"));
-            success(diff(&[&input, &out]));
+            success(diff(&["--timescale", "1ns", &input, &out]));
         }
     }
 }

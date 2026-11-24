@@ -10,7 +10,7 @@ use clap::Parser;
 use std::io::Write;
 use std::path::PathBuf;
 use wavetools::{
-    apply_filter, compare_signal_meta, compare_signal_names, diff_wave_sets,
+    apply_filter, compare_signal_meta, compare_signal_names, diff_wave_sets_with_timescale,
     open_and_read_wave_sets, parse_filter_patterns, DiffOptions, NameOptions, WaveHierarchy,
 };
 
@@ -63,6 +63,10 @@ struct Args {
     #[arg(long)]
     epsilon: Option<f64>,
 
+    /// Interpret all input ticks using this timescale without rescaling (e.g. 10ps)
+    #[arg(long, value_parser = parse_timescale)]
+    timescale: Option<i8>,
+
     /// Skip metadata comparison (type, size, direction, attributes)
     #[arg(long)]
     no_attrs: bool,
@@ -79,6 +83,29 @@ struct Args {
     /// space-separated list (e.g. --filter "*.foo *.bar" or --filter "*.foo" --filter "*.bar")
     #[arg(short, long, action = clap::ArgAction::Append)]
     filter: Vec<String>,
+}
+
+fn parse_timescale(input: &str) -> Result<i8, String> {
+    let input = input.trim();
+    let end = input
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(input.len());
+    let power = match &input[..end] {
+        "1" => 0,
+        "10" => 1,
+        "100" => 2,
+        _ => return Err("expected a timescale such as 1ns or 10ps".into()),
+    };
+    let exponent = match input[end..].trim() {
+        "s" => 0,
+        "ms" => -3,
+        "us" => -6,
+        "ns" => -9,
+        "ps" => -12,
+        "fs" => -15,
+        _ => return Err("expected s, ms, us, ns, ps, or fs".into()),
+    };
+    Ok(exponent + power)
 }
 
 fn main() {
@@ -204,8 +231,9 @@ fn run(args: Args) -> Result<bool, String> {
         real_epsilon: args.epsilon,
     };
     let mut stdout = std::io::stdout();
-    let value_diffs = diff_wave_sets(&mut stdout, sets, &diff_options)
-        .map_err(|e| format!("Failed to diff files: {}", e))?;
+    let value_diffs =
+        diff_wave_sets_with_timescale(&mut stdout, sets, &diff_options, args.timescale)
+            .map_err(|e| format!("Failed to diff files: {}", e))?;
 
     Ok(has_differences || value_diffs)
 }
