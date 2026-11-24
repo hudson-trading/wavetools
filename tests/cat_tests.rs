@@ -76,6 +76,7 @@ fn test_cat(path: &Path) -> datatest_stable::Result<()> {
     let options = SignalOutputOptions {
         sort: true,
         time_pound: false,
+        no_delta: false,
     };
     let mut output = Vec::new();
     write_signals_wave(

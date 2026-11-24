@@ -53,6 +53,7 @@ fn test_signals_start_end_fst() {
     let options = SignalOutputOptions {
         sort: true,
         time_pound: false,
+        no_delta: false,
     };
     let output = read_signals_with_options("tests/data/counter.fst", 10, Some(30), &options);
     let expected = "\
@@ -74,6 +75,7 @@ fn test_signals_start_end_vcd() {
     let options = SignalOutputOptions {
         sort: true,
         time_pound: false,
+        no_delta: false,
     };
     let output = read_signals_with_options("tests/data/counter.vcd", 10, Some(30), &options);
     let expected = "\
@@ -95,6 +97,7 @@ fn test_signals_start_only() {
     let options = SignalOutputOptions {
         sort: true,
         time_pound: false,
+        no_delta: false,
     };
     let output = read_signals_with_options("tests/data/counter.fst", 40, None, &options);
     let expected = "\
@@ -109,6 +112,7 @@ fn test_signals_end_only() {
     let options = SignalOutputOptions {
         sort: true,
         time_pound: false,
+        no_delta: false,
     };
     let output = read_signals_with_options("tests/data/counter.fst", 0, Some(10), &options);
     let expected = "\
@@ -129,6 +133,7 @@ fn test_signals_start_beyond_data() {
     let options = SignalOutputOptions {
         sort: true,
         time_pound: false,
+        no_delta: false,
     };
     let output = read_signals_with_options("tests/data/counter.fst", 1000, None, &options);
     assert!(
@@ -144,6 +149,7 @@ fn test_signals_time_pound() {
     let options = SignalOutputOptions {
         sort: true,
         time_pound: true,
+        no_delta: false,
     };
     let output = read_signals_with_options("tests/data/counter.fst", 0, Some(10), &options);
     let expected = "\
@@ -164,6 +170,7 @@ fn test_signals_time_pound_vcd() {
     let options = SignalOutputOptions {
         sort: true,
         time_pound: true,
+        no_delta: false,
     };
     let output = read_signals_with_options("tests/data/counter.vcd", 0, Some(10), &options);
     let expected = "\
@@ -245,4 +252,30 @@ fn test_format_forcing_wrong_format() {
         Some(WaveFormat::Vcd),
     );
     assert!(result.is_err(), "Should fail to open FST file as VCD");
+}
+
+#[test]
+fn test_delta_cycles_labelled_or_left_out() {
+    let mut options = SignalOutputOptions {
+        sort: false,
+        time_pound: false,
+        no_delta: false,
+    };
+    let path = "tests/data/repeated_changes_glitch.vcd";
+    assert_eq!(
+        read_signals_with_options(path, 10, Some(10), &options),
+        "10(0) t.a 1
+10(1) t.a 1
+10 t.a 1
+10(0) t.b [3:0] 0001
+10 t.b [3:0] 0010
+"
+    );
+    options.no_delta = true;
+    assert_eq!(
+        read_signals_with_options(path, 10, Some(10), &options),
+        "10 t.a 1
+10 t.b [3:0] 0010
+"
+    );
 }

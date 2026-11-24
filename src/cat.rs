@@ -24,30 +24,137 @@ pub struct SignalOutputOptions {
     pub time_pound: bool,
     /// Sort signals by name within each time
     pub sort: bool,
+    /// Show only the last value of each signal at each time, leaving out
+    /// the changes before it (delta cycles)
+    pub no_delta: bool,
 }
 
 fn write_signal_line<W: Write>(
     writer: &mut W,
     time: u64,
+    delta: Option<usize>,
     name: &str,
     value: &str,
     time_pound: bool,
 ) -> std::io::Result<()> {
     let pound = if time_pound { "#" } else { "" };
-    writeln!(writer, "{}{} {} {}", pound, time, name, value)
+    match delta {
+        Some(delta) => writeln!(writer, "{}{}({}) {} {}", pound, time, delta, name, value),
+        None => writeln!(writer, "{}{} {} {}", pound, time, name, value),
+    }
 }
 
-fn flush_signal_batch<W: Write>(
-    writer: &mut W,
-    time: u64,
-    batch: &mut Vec<(String, String)>,
-    time_pound: bool,
-) -> std::io::Result<()> {
-    batch.sort_by(|(a, _), (b, _)| a.cmp(b));
-    for (name, value) in batch.drain(..) {
-        write_signal_line(writer, time, &name, &value, time_pound)?;
+/// Writes the signal listing one time step at a time. A signal can change
+/// more than once at the same time (delta cycles): its last change is shown
+/// at `TIME`, and the ones before it at `TIME(DELTA)`, counting from 0.
+struct StepWriter<'a, W: Write> {
+    writer: &'a mut W,
+    options: &'a SignalOutputOptions,
+    time: Option<u64>,
+    /// The changes at `time`: handle, names and value.
+    changes: Vec<(usize, &'a [String], String)>,
+    /// The delta of each change in `changes`, or `None` for the last change
+    /// of its handle.
+    deltas: Vec<Option<usize>>,
+    /// Changes of each handle at `time`, and how many of them were seen,
+    /// indexed by handle.
+    counts: Vec<(usize, usize)>,
+    /// Name and position in `changes` of each row, for `--sort`.
+    sorted: Vec<(&'a str, usize)>,
+}
+
+impl<'a, W: Write> StepWriter<'a, W> {
+    fn new(writer: &'a mut W, options: &'a SignalOutputOptions) -> Self {
+        StepWriter {
+            writer,
+            options,
+            time: None,
+            changes: Vec::new(),
+            deltas: Vec::new(),
+            counts: Vec::new(),
+            sorted: Vec::new(),
+        }
     }
-    Ok(())
+
+    /// Add a change at `time`; `None` only marks the time.
+    fn change(
+        &mut self,
+        time: u64,
+        change: Option<(usize, &'a [String])>,
+        value: String,
+    ) -> io::Result<()> {
+        if self.time != Some(time) {
+            self.flush()?;
+            self.time = Some(time);
+        }
+        if let Some((handle, names)) = change {
+            self.changes.push((handle, names, value));
+        }
+        Ok(())
+    }
+
+    /// Write the changes buffered for the current time.
+    fn flush(&mut self) -> io::Result<()> {
+        let Some(time) = self.time else {
+            return Ok(());
+        };
+        for &(handle, _, _) in &self.changes {
+            if handle >= self.counts.len() {
+                self.counts.resize(handle + 1, (0, 0));
+            }
+            self.counts[handle].0 += 1;
+        }
+        self.deltas.clear();
+        for &(handle, _, _) in &self.changes {
+            let (count, seen) = &mut self.counts[handle];
+            self.deltas.push((*seen + 1 < *count).then_some(*seen));
+            *seen += 1;
+        }
+        for &(handle, _, _) in &self.changes {
+            self.counts[handle] = (0, 0);
+        }
+
+        let options = self.options;
+        if options.sort {
+            self.sorted.clear();
+            for (i, &(_, names, _)) in self.changes.iter().enumerate() {
+                if self.deltas[i].is_none() || !options.no_delta {
+                    self.sorted
+                        .extend(names.iter().map(|name| (name.as_str(), i)));
+                }
+            }
+            // A stable sort keeps the changes of a signal in order.
+            self.sorted.sort_by(|a, b| a.0.cmp(b.0));
+            for &(name, i) in &self.sorted {
+                write_signal_line(
+                    self.writer,
+                    time,
+                    self.deltas[i],
+                    name,
+                    &self.changes[i].2,
+                    options.time_pound,
+                )?;
+            }
+        } else {
+            for (i, (_, names, value)) in self.changes.iter().enumerate() {
+                if self.deltas[i].is_some() && options.no_delta {
+                    continue;
+                }
+                for name in names.iter() {
+                    write_signal_line(
+                        self.writer,
+                        time,
+                        self.deltas[i],
+                        name,
+                        value,
+                        options.time_pound,
+                    )?;
+                }
+            }
+        }
+        self.changes.clear();
+        Ok(())
+    }
 }
 
 /// Read and write signal values to a writer
@@ -58,8 +165,7 @@ fn write_signals<R: BufRead + Seek, W: Write>(
     filter: &fst_reader::FstFilter,
     options: &SignalOutputOptions,
 ) -> std::io::Result<()> {
-    let mut current_time: Option<u64> = None;
-    let mut batch: Vec<(String, String)> = Vec::new();
+    let mut step = StepWriter::new(writer, options);
     let mut write_error: Option<std::io::Error> = None;
 
     fst_reader
@@ -84,33 +190,13 @@ fn write_signals<R: BufRead + Seek, W: Write>(
                 FstSignalValue::Real(r) => r.to_string(),
             };
 
-            if let Some(names) = handle_to_names.get(&handle.get_index()) {
-                for name in names {
-                    if options.sort {
-                        if let Some(prev_time) = current_time {
-                            if prev_time != time {
-                                if let Err(e) = flush_signal_batch(
-                                    writer,
-                                    prev_time,
-                                    &mut batch,
-                                    options.time_pound,
-                                ) {
-                                    write_error = Some(e);
-                                    return;
-                                }
-                            }
-                        }
-                        current_time = Some(time);
-                        batch.push((name.clone(), value_str.clone()));
-                    } else if let Err(e) =
-                        write_signal_line(writer, time, name, &value_str, options.time_pound)
-                    {
-                        write_error = Some(e);
-                        return;
-                    }
+            let handle = handle.get_index();
+            if let Some(names) = handle_to_names.get(&handle) {
+                if let Err(e) = step.change(time, Some((handle, names.as_slice())), value_str) {
+                    write_error = Some(e);
                 }
             } else {
-                eprintln!("Warning: unknown FST handle {}", handle.get_index());
+                eprintln!("Warning: unknown FST handle {}", handle);
             }
         })
         .map_err(|e| std::io::Error::other(format!("Failed to read signals: {}", e)))?;
@@ -119,13 +205,7 @@ fn write_signals<R: BufRead + Seek, W: Write>(
         return Err(e);
     }
 
-    if options.sort {
-        if let Some(time) = current_time {
-            flush_signal_batch(writer, time, &mut batch, options.time_pound)?;
-        }
-    }
-
-    Ok(())
+    step.flush()
 }
 
 /// Write signal values from a WaveReader to a writer
@@ -283,44 +363,15 @@ pub fn write_signals_wave_multi<W: Write>(
         );
     }
 
-    let mut current_time: Option<u64> = None;
-    let mut batch: Vec<(String, String)> = Vec::new();
-
+    let mut step = StepWriter::new(writer, options);
     let include = handle_to_names.keys().copied().collect();
     merge_changes(readers, offsets, start, end, Some(&include), |change| {
-        if options.sort {
-            if let Some(prev_time) = current_time {
-                if prev_time != change.time {
-                    flush_signal_batch(writer, prev_time, &mut batch, options.time_pound)?;
-                }
-            }
-            current_time = Some(change.time);
-        }
-        if let Some(names) = change.handle.and_then(|h| handle_to_names.get(&h)) {
-            for name in names {
-                if options.sort {
-                    batch.push((name.clone(), change.value.clone()));
-                } else {
-                    write_signal_line(
-                        writer,
-                        change.time,
-                        name,
-                        &change.value,
-                        options.time_pound,
-                    )?;
-                }
-            }
-        }
-        Ok(())
+        let names = change
+            .handle
+            .and_then(|handle| Some((handle, handle_to_names.get(&handle)?.as_slice())));
+        step.change(change.time, names, change.value)
     })?;
-
-    if options.sort {
-        if let Some(time) = current_time {
-            flush_signal_batch(writer, time, &mut batch, options.time_pound)?;
-        }
-    }
-
-    Ok(())
+    step.flush()
 }
 
 fn write_vcd_signals<W: Write>(
@@ -331,9 +382,7 @@ fn write_vcd_signals<W: Write>(
     end: Option<u64>,
     options: &SignalOutputOptions,
 ) -> std::io::Result<()> {
-    let mut current_batch_time: Option<u64> = None;
-    let mut batch: Vec<(String, String)> = Vec::new();
-
+    let mut step = StepWriter::new(writer, options);
     while let Some((time, handle_idx, value_str)) = next_vcd_change(vcd_data)? {
         if time < start {
             continue;
@@ -344,29 +393,10 @@ fn write_vcd_signals<W: Write>(
             }
         }
         if let Some(names) = handle_to_names.get(&handle_idx) {
-            for name in names {
-                if options.sort {
-                    if let Some(prev) = current_batch_time {
-                        if prev != time {
-                            flush_signal_batch(writer, prev, &mut batch, options.time_pound)?;
-                        }
-                    }
-                    current_batch_time = Some(time);
-                    batch.push((name.clone(), value_str.clone()));
-                } else {
-                    write_signal_line(writer, time, name, &value_str, options.time_pound)?;
-                }
-            }
+            step.change(time, Some((handle_idx, names.as_slice())), value_str)?;
         }
     }
-
-    if options.sort {
-        if let Some(time) = current_batch_time {
-            flush_signal_batch(writer, time, &mut batch, options.time_pound)?;
-        }
-    }
-
-    Ok(())
+    step.flush()
 }
 
 /// Stream merged changes with bounded queues and propagate reader errors.

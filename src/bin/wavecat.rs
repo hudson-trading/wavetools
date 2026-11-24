@@ -70,6 +70,11 @@ struct Args {
     #[arg(long)]
     time_pound: bool,
 
+    /// Show only the last value of each signal at each time, leaving out
+    /// delta cycles (earlier changes at the same time)
+    #[arg(long)]
+    no_delta: bool,
+
     /// No space before range
     #[arg(long)]
     no_range_space: bool,
@@ -197,6 +202,7 @@ fn process_wave_file(args: &Args) -> Result<(), String> {
         let output_options = SignalOutputOptions {
             time_pound: args.time_pound,
             sort: args.sort,
+            no_delta: args.no_delta,
         };
 
         let mut stdout = std::io::stdout();
