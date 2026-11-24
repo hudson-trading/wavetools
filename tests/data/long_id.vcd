@@ -1,0 +1,6 @@
+$scope module top $end
+$var wire 256 long_id_code long_id_signal [255:0] $end
+$upscope $end
+$enddefinitions $end
+#0
+b101 long_id_code
