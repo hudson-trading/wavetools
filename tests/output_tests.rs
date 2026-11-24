@@ -225,6 +225,39 @@ fn four_state_vectors_and_final_timestamp() {
 }
 
 #[test]
+fn fst_export_with_hard_to_compress_time_table_is_readable() {
+    // fst-writer 0.3.1 stored the compressed time table when it was no shorter
+    // than the raw one, and readers then read it as uncompressed.
+    let times = [
+        5u64, 123456794, 246913583, 370370372, 370370377, 370371377, 370372397, 370372407,
+        370372418, 370372429, 370372431, 493829220, 493829221,
+    ];
+    let mut vcd = String::from(
+        "$timescale 100us $end
+$var wire 1 ! a $end
+$enddefinitions $end
+",
+    );
+    for (i, time) in times.iter().enumerate() {
+        vcd.push_str(&format!(
+            "#{time}
+{}!
+",
+            i % 2
+        ));
+    }
+    let temp = Temp::new();
+    let input = temp.input(&vcd);
+    let out = temp.path("out.fst");
+    success(cat(&[&input, "-o", &out]));
+    assert!(success(cat(&[&out])).ends_with(
+        "493829220 a 1
+493829221 a 0
+"
+    ));
+}
+
+#[test]
 fn fst_export_preserves_annotations_and_scope_types() {
     let temp = Temp::new();
     for fixture in ["enums", "structs", "struct_arrays"] {
