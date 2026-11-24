@@ -39,11 +39,12 @@ pub struct WaveSets {
 
 /// Max queued batches per channel. Each batch holds up to BATCH_SIZE changes.
 /// Limit read-ahead when the two input formats decode at different speeds.
-/// Eight batches allow 32,768 queued changes without a large memory backlog.
-const CHANNEL_BOUND: usize = 8;
+/// Four batches allow 8,192 queued changes per input; the comparison also
+/// holds a whole time step of each input.
+const CHANNEL_BOUND: usize = 4;
 
 /// Number of signal changes collected before sending a batch through the channel.
-const BATCH_SIZE: usize = 4096;
+const BATCH_SIZE: usize = 2048;
 
 /// Owned version of `FstSignalValue` for sending through channels
 #[derive(Debug, Clone)]
@@ -215,14 +216,23 @@ struct SignalChange {
 struct TimeBatch {
     time: u64,
     changes: Vec<SignalChange>,
+    /// Set if no batch at `time` follows, so the consumer doesn't need to read
+    /// ahead to know it has seen the whole time step.
+    step_end: bool,
 }
 
 /// Flush the current batch through `tx`, replacing it with a fresh empty vec.
-fn flush_batch(tx: &channel::Sender<TimeBatch>, time: u64, changes: &mut Vec<SignalChange>) {
+fn flush_batch(
+    tx: &channel::Sender<TimeBatch>,
+    time: u64,
+    changes: &mut Vec<SignalChange>,
+    step_end: bool,
+) {
     let full = std::mem::replace(changes, Vec::with_capacity(BATCH_SIZE));
     let _ = tx.send(TimeBatch {
         time,
         changes: full,
+        step_end,
     });
 }
 
@@ -279,7 +289,7 @@ fn read_and_send_signals<R: BufRead + Seek>(
             }
         }
         if !batch.is_empty() && (time != batch_time || batch.len() >= BATCH_SIZE) {
-            flush_batch(&tx, batch_time, &mut batch);
+            flush_batch(&tx, batch_time, &mut batch, time != batch_time);
         }
         batch_time = time;
         batch.push(SignalChange {
@@ -292,6 +302,7 @@ fn read_and_send_signals<R: BufRead + Seek>(
         let _ = tx.send(TimeBatch {
             time: batch_time,
             changes: batch,
+            step_end: true,
         });
     }
     Ok(())
@@ -374,23 +385,43 @@ fn emit_file2_only<W: Write>(
     writeln!(writer, "{} {} {} (only in file2)", time, name, value)
 }
 
-/// For each change of a time step, how many changes of the same signal follow
-/// it in the step, and for each signal, its number of changes in the step.
-fn count_step_changes(
-    changes: &[SignalChange],
-    counts: &mut HashMap<usize, usize>,
-    remaining: &mut Vec<usize>,
-) {
-    counts.clear();
-    remaining.clear();
-    // Walk backwards so that the last change of each signal is the first one
-    // seen: most signals change once per time step.
-    for change in changes.iter().rev() {
-        let count = counts.entry(change.handle).or_insert(0);
-        remaining.push(*count);
-        *count += 1;
+/// The number of changes of each signal in a time step, indexed by handle,
+/// and for each change, how many changes of the same signal follow it.
+#[derive(Default)]
+struct StepCounts {
+    counts: Vec<u32>,
+    remaining: Vec<u32>,
+}
+
+impl StepCounts {
+    fn count<'a>(&mut self, changes: impl DoubleEndedIterator<Item = &'a SignalChange>) {
+        self.remaining.clear();
+        // Walk backwards so that the last change of each signal is the first
+        // one seen: most signals change once per time step.
+        for change in changes.rev() {
+            if change.handle >= self.counts.len() {
+                self.counts.resize(change.handle + 1, 0);
+            }
+            let count = &mut self.counts[change.handle];
+            self.remaining.push(*count);
+            *count += 1;
+        }
+        self.remaining.reverse();
     }
-    remaining.reverse();
+
+    fn get(&self, handle: usize) -> usize {
+        self.counts[handle] as usize
+    }
+
+    fn reset(&mut self, handle: usize) {
+        self.counts[handle] = 0;
+    }
+
+    fn clear<'a>(&mut self, changes: impl Iterator<Item = &'a SignalChange>) {
+        for change in changes {
+            self.counts[change.handle] = 0;
+        }
+    }
 }
 
 /// File2 changes read from the channel but not compared yet, by (time, handle).
@@ -438,6 +469,34 @@ impl Buffered2 {
         }
     }
 
+    /// Remove the changes for `key` once they have been compared with a
+    /// signal that had `compared_before_last` changes before its last one.
+    /// File2's changes before its last that weren't compared are moved to
+    /// `leftovers`, to report at the end.
+    fn evict(
+        &mut self,
+        key: (u64, usize),
+        compared_before_last: usize,
+        leftovers: Option<&mut Vec<(DeltaTime, usize, OwnedSignalValue)>>,
+    ) {
+        if !self.has_later(key) {
+            self.first.remove(&key);
+            return;
+        }
+        let values = self.take(key);
+        let count = values.len();
+        if let Some(leftovers) = leftovers {
+            for (n, value) in values
+                .into_iter()
+                .enumerate()
+                .take(count - 1)
+                .skip(compared_before_last)
+            {
+                leftovers.push((DeltaTime::new(key.0, n, count), key.1, value));
+            }
+        }
+    }
+
     /// Remove and return all changes for `key`, in order.
     fn take(&mut self, key: (u64, usize)) -> Vec<OwnedSignalValue> {
         let Some(first) = self.first.remove(&key) else {
@@ -480,30 +539,89 @@ fn compare_signal_channels<W: Write>(
     let mut latest_time2: Option<u64> = None;
     let mut source2_ended = false;
 
+    // Whether the last batch read from file2 ended its time step.
+    let mut step_end2 = false;
+
     // File1's changes at the current time step, which may span batches.
-    let mut step: Vec<SignalChange> = Vec::new();
-    let mut step_time: Option<u64> = None;
-    let mut counts1: HashMap<usize, usize> = HashMap::new();
-    let mut remaining1: Vec<usize> = Vec::new();
-    // (file2 handle, file1 handle) pairs compared at the current time step,
-    // so we can evict their buffer entries when the step is done.
+    let mut step: Vec<Vec<SignalChange>> = Vec::new();
+    let mut counts1 = StepCounts::default();
+    // File2 handles that several file1 handles map to. Their buffer entries are
+    // evicted when the time step is done; the others as soon as compared.
+    let mut shared2 = HashSet::new();
+    {
+        let mut seen = HashSet::new();
+        for &handle2 in handle_mapping.values().flatten() {
+            if !seen.insert(handle2) {
+                shared2.insert(handle2);
+            }
+        }
+    }
+    // Handles of `shared2` compared at the current time step, with the number
+    // of changes before the last of the file1 signal compared with them.
     let mut compared: Vec<(usize, usize)> = Vec::new();
 
-    loop {
-        let batch1 = rx1.recv().ok();
-        if matches!((&batch1, step_time), (Some(batch), Some(time)) if batch.time == time) {
-            step.extend(batch1.unwrap().changes);
-            continue;
+    // A file1 batch read past the end of the previous time step.
+    let mut pending1: Option<TimeBatch> = None;
+    while let Some(first) = pending1.take().or_else(|| rx1.recv().ok()) {
+        let time = first.time;
+        let mut step_end = first.step_end;
+        let mut file2_has_time = latest_time2 == Some(time);
+        // File1 and file2 batches at this time read so far. They are read in
+        // turn, so that neither input's reader gets far ahead of the other.
+        let mut batches1 = 0;
+        let mut batches2 = usize::from(file2_has_time);
+        let mut next1 = Some(first);
+        loop {
+            if let Some(batch) = next1.take() {
+                step.push(batch.changes);
+                batches1 += 1;
+            }
+            // Read file2 up to this time, and as many batches at it as file1.
+            while !source2_ended
+                && latest_time2
+                    .is_none_or(|t2| t2 < time || (t2 == time && !step_end2 && batches2 < batches1))
+            {
+                match rx2.recv() {
+                    Ok(batch2) => {
+                        if batch2.time == time {
+                            file2_has_time = true;
+                            batches2 += 1;
+                        }
+                        latest_time2 = Some(batch2.time);
+                        step_end2 = batch2.step_end;
+                        for c in batch2.changes {
+                            buffered2.push((batch2.time, c.handle), c.value);
+                        }
+                    }
+                    Err(_) => source2_ended = true,
+                }
+            }
+            if step_end {
+                break;
+            }
+            match rx1.recv() {
+                Ok(batch) if batch.time == time => {
+                    step_end = batch.step_end;
+                    next1 = Some(batch);
+                }
+                Ok(batch) => {
+                    pending1 = Some(batch);
+                    break;
+                }
+                Err(_) => break,
+            }
         }
 
-        if let Some(time) = step_time {
+        {
             // Read file2 until every change at this time is buffered.
-            let mut file2_has_time = latest_time2 == Some(time);
-            while !source2_ended && latest_time2.is_none_or(|t2| t2 <= time) {
+            while !source2_ended
+                && !latest_time2.is_some_and(|t2| t2 > time || (t2 == time && step_end2))
+            {
                 match rx2.recv() {
                     Ok(batch2) => {
                         file2_has_time |= batch2.time == time;
                         latest_time2 = Some(batch2.time);
+                        step_end2 = batch2.step_end;
                         for c in batch2.changes {
                             buffered2.push((batch2.time, c.handle), c.value);
                         }
@@ -512,8 +630,16 @@ fn compare_signal_channels<W: Write>(
                 }
             }
 
-            count_step_changes(&step, &mut counts1, &mut remaining1);
-            for (change1, &remaining) in step.iter().zip(&remaining1) {
+            counts1.count(step.iter().flatten());
+            let remaining1 = std::mem::take(&mut counts1.remaining);
+            // Consume the changes, so that their values are freed as they are
+            // compared rather than all at the end of the step.
+            for (change1, &remaining) in step.drain(..).flatten().zip(&remaining1) {
+                let remaining = remaining as usize;
+                let before_last = counts1.get(change1.handle) - 1;
+                if remaining == 0 {
+                    counts1.reset(change1.handle);
+                }
                 if remaining > 0 && no_delta {
                     continue;
                 }
@@ -522,102 +648,85 @@ fn compare_signal_channels<W: Write>(
                 };
                 for &handle2 in handles2 {
                     let key = (time, handle2);
-                    let last2 = buffered2.last(key);
-                    let (delta_time, value2) = if remaining == 0 {
-                        compared.push((handle2, change1.handle));
-                        (
-                            DeltaTime { time, delta: None },
-                            last2.map(|(_, value)| value),
-                        )
-                    } else {
-                        let n = counts1[&change1.handle] - 1 - remaining;
-                        let value2 = match last2 {
-                            Some((n2, _)) if n < n2 => buffered2.get(key, n),
-                            _ => None,
+                    {
+                        let last2 = buffered2.last(key);
+                        let (delta_time, value2) = if remaining == 0 {
+                            (
+                                DeltaTime { time, delta: None },
+                                last2.map(|(_, value)| value),
+                            )
+                        } else {
+                            let n = before_last - remaining;
+                            let value2 = match last2 {
+                                Some((n2, _)) if n < n2 => buffered2.get(key, n),
+                                _ => None,
+                            };
+                            (
+                                DeltaTime {
+                                    time,
+                                    delta: Some(n),
+                                },
+                                value2,
+                            )
                         };
-                        (
-                            DeltaTime {
-                                time,
-                                delta: Some(n),
-                            },
-                            value2,
-                        )
-                    };
-                    if let Some(value2) = value2 {
-                        let use_real_epsilon =
-                            handles_are_real(hier1, change1.handle, hier2, handle2);
-                        if !change1
-                            .value
-                            .approx_eq(value2, real_epsilon, use_real_epsilon)
-                        {
+                        if let Some(value2) = value2 {
+                            let use_real_epsilon =
+                                handles_are_real(hier1, change1.handle, hier2, handle2);
+                            if !change1
+                                .value
+                                .approx_eq(value2, real_epsilon, use_real_epsilon)
+                            {
+                                has_differences = true;
+                                emit_value_diff(
+                                    writer,
+                                    change1.handle,
+                                    hier1,
+                                    delta_time,
+                                    &change1.value,
+                                    value2,
+                                )?;
+                            }
+                        } else {
                             has_differences = true;
-                            emit_value_diff(
+                            let msg = if file2_has_time {
+                                "(not in file2)"
+                            } else {
+                                "(missing time in file2)"
+                            };
+                            emit_file1_only(
                                 writer,
                                 change1.handle,
                                 hier1,
                                 delta_time,
                                 &change1.value,
-                                value2,
+                                msg,
                             )?;
                         }
-                    } else {
-                        has_differences = true;
-                        let msg = if file2_has_time {
-                            "(not in file2)"
+                    }
+                    // After its last change, this file1 signal is done with
+                    // file2's changes at this time.
+                    if remaining == 0 {
+                        if shared2.is_empty() || !shared2.contains(&handle2) {
+                            let leftovers = (!no_delta).then_some(&mut leftovers2);
+                            buffered2.evict(key, before_last, leftovers);
                         } else {
-                            "(missing time in file2)"
-                        };
-                        emit_file1_only(
-                            writer,
-                            change1.handle,
-                            hier1,
-                            delta_time,
-                            &change1.value,
-                            msg,
-                        )?;
+                            compared.push((handle2, before_last));
+                        }
                     }
                 }
             }
 
-            // Evict the compared file2 changes. File2 changes before the last
-            // that file1 had no counterpart for are kept to report at the end.
-            let mut repeated: Vec<(usize, usize)> = Vec::new();
-            for &(handle2, handle1) in &compared {
-                if buffered2.has_later((time, handle2)) {
-                    repeated.push((handle2, counts1[&handle1] - 1));
-                } else {
-                    buffered2.first.remove(&(time, handle2));
-                }
-            }
-            compared.clear();
             // Several file1 handles can map to one file2 handle; the one with
             // the most changes decides how many were compared.
+            counts1.remaining = remaining1;
+            let mut repeated: Vec<(usize, usize)> = std::mem::take(&mut compared);
             repeated.sort_unstable();
             repeated.reverse();
             repeated.dedup_by_key(|&mut (handle2, _)| handle2);
             for (handle2, compared_before_last) in repeated {
-                let values = buffered2.take((time, handle2));
-                let count = values.len();
-                if !no_delta {
-                    for (n, value) in values
-                        .into_iter()
-                        .enumerate()
-                        .take(count - 1)
-                        .skip(compared_before_last)
-                    {
-                        leftovers2.push((DeltaTime::new(time, n, count), handle2, value));
-                    }
-                }
+                let leftovers = (!no_delta).then_some(&mut leftovers2);
+                buffered2.evict((time, handle2), compared_before_last, leftovers);
             }
-            step.clear();
-        }
-
-        match batch1 {
-            Some(batch) => {
-                step_time = Some(batch.time);
-                step = batch.changes;
-            }
-            None => break,
         }
     }
 
@@ -658,24 +767,26 @@ fn compare_signal_channels<W: Write>(
     // filtered-out handles are streamed by the reader but excluded from the
     // comparison set.
     if !source2_ended {
-        let mut step2: Vec<SignalChange> = Vec::new();
+        let mut step2: Vec<Vec<SignalChange>> = Vec::new();
         let mut step2_time: Option<u64> = None;
+        let mut counts2 = StepCounts::default();
         loop {
             let batch2 = rx2.recv().ok();
             if matches!((&batch2, step2_time), (Some(batch), Some(time)) if batch.time == time) {
-                step2.extend(batch2.unwrap().changes);
+                step2.push(batch2.unwrap().changes);
                 continue;
             }
             if let Some(time) = step2_time {
-                count_step_changes(&step2, &mut counts1, &mut remaining1);
-                for (change2, &remaining) in step2.iter().zip(&remaining1) {
+                counts2.count(step2.iter().flatten());
+                for (change2, &remaining) in step2.iter().flatten().zip(&counts2.remaining) {
+                    let remaining = remaining as usize;
                     if (remaining > 0 && no_delta)
                         || !hier2.signal_map.contains_key(&change2.handle)
                     {
                         continue;
                     }
                     has_differences = true;
-                    let count = counts1[&change2.handle];
+                    let count = counts2.get(change2.handle);
                     let delta_time = DeltaTime::new(time, count - 1 - remaining, count);
                     for name in format_handle_names(change2.handle, &hier2.signal_map, &hier2.names)
                     {
@@ -683,10 +794,12 @@ fn compare_signal_channels<W: Write>(
                     }
                 }
             }
+            counts2.clear(step2.iter().flatten());
+            step2.clear();
             match batch2 {
                 Some(batch) => {
                     step2_time = Some(batch.time);
-                    step2 = batch.changes;
+                    step2.push(batch.changes);
                 }
                 None => break,
             }
@@ -740,7 +853,7 @@ fn send_wave_changes(
                     continue;
                 }
                 if !batch.is_empty() && (time != batch_time || batch.len() >= BATCH_SIZE) {
-                    flush_batch(&tx, batch_time, &mut batch);
+                    flush_batch(&tx, batch_time, &mut batch, time != batch_time);
                 }
                 batch_time = time;
                 batch.push(SignalChange {
@@ -752,6 +865,7 @@ fn send_wave_changes(
                 let _ = tx.send(TimeBatch {
                     time: batch_time,
                     changes: batch,
+                    step_end: true,
                 });
             }
         }
@@ -812,7 +926,10 @@ fn send_merged_wave_changes(
             .map(|(i, _)| i);
         match min_idx {
             Some(idx) => {
-                let _ = tx.send(heads[idx].take().unwrap());
+                let mut batch = heads[idx].take().unwrap();
+                // Another reader may still have changes at this time.
+                batch.step_end &= heads.iter().flatten().all(|b| b.time != batch.time);
+                let _ = tx.send(batch);
                 heads[idx] = inner_rxs[idx].recv().ok();
             }
             None => break,
@@ -1071,6 +1188,7 @@ mod tests {
             let (tx2, rx2) = channel::unbounded();
             for tx in [tx1, tx2] {
                 tx.send(TimeBatch {
+                    step_end: false,
                     time: 0,
                     changes: vec![SignalChange {
                         handle: 0,
@@ -1150,6 +1268,7 @@ mod tests {
             let (tx2, rx2) = channel::unbounded();
             for (tx, values) in [(tx1, values1), (tx2, values2)] {
                 tx.send(TimeBatch {
+                    step_end: false,
                     time: 0,
                     changes: values
                         .bytes()
@@ -1195,12 +1314,14 @@ mod tests {
         let (tx1, rx1) = channel::unbounded();
         let (tx2, rx2) = channel::unbounded();
         tx1.send(TimeBatch {
+            step_end: false,
             time: 10,
             changes: vec![change(0, b"1"), change(1, b"1")],
         })
         .unwrap();
         for (time, value) in [(10, b"1"), (20, b"0")] {
             tx2.send(TimeBatch {
+                step_end: false,
                 time,
                 changes: vec![change(0, value)],
             })
@@ -1245,6 +1366,7 @@ mod tests {
         let (tx2, rx2) = channel::unbounded();
         for time in [0, 1] {
             tx1.send(TimeBatch {
+                step_end: false,
                 time,
                 changes: vec![change(b"0")],
             })
@@ -1254,7 +1376,12 @@ mod tests {
         let mut first = vec![change(b"0")];
         first.extend((1..BATCH_SIZE).map(|_| change(b"1")));
         for (time, changes) in [(0, first), (0, vec![change(b"x")]), (1, vec![change(b"0")])] {
-            tx2.send(TimeBatch { time, changes }).unwrap();
+            tx2.send(TimeBatch {
+                step_end: false,
+                time,
+                changes,
+            })
+            .unwrap();
         }
         drop((tx1, tx2));
         let mut output = Vec::new();
