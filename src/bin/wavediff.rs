@@ -79,6 +79,11 @@ struct Args {
     /// space-separated list (e.g. --filter "*.foo *.bar" or --filter "*.foo" --filter "*.bar")
     #[arg(short, long, action = clap::ArgAction::Append)]
     filter: Vec<String>,
+
+    /// Compare only the last value of each signal at each time, ignoring
+    /// delta cycles (earlier changes at the same time)
+    #[arg(long)]
+    no_delta: bool,
 }
 
 fn main() {
@@ -202,6 +207,7 @@ fn run(args: Args) -> Result<bool, String> {
         start: args.start.unwrap_or(0),
         end: args.end,
         real_epsilon: args.epsilon,
+        no_delta: args.no_delta,
     };
     let mut stdout = std::io::stdout();
     let value_diffs = diff_wave_sets(&mut stdout, sets, &diff_options)

@@ -202,6 +202,7 @@ fn test_cat_multi_signals_sorted() {
     let options = SignalOutputOptions {
         time_pound: false,
         sort: true,
+        no_delta: false,
     };
     let mut multi_output = Vec::new();
     write_signals_wave_multi(
@@ -256,6 +257,7 @@ fn test_diff_set_vs_single_identical() {
         start: 0,
         end: None,
         real_epsilon: None,
+        no_delta: false,
     };
     let has_diff = diff_wave_sets(
         &mut output,
@@ -297,6 +299,7 @@ fn test_diff_set_value_difference() {
         start: 0,
         end: None,
         real_epsilon: None,
+        no_delta: false,
     };
     let has_diff = diff_wave_sets(
         &mut output,

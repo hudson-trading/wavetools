@@ -22,6 +22,9 @@ pub struct DiffOptions {
     pub start: u64,
     pub end: Option<u64>,
     pub real_epsilon: Option<f64>,
+    /// Compare only the last change of each signal at each time, ignoring
+    /// the changes before it (delta cycles).
+    pub no_delta: bool,
 }
 
 /// Result of opening two wave file sets for comparison.
@@ -303,12 +306,40 @@ fn format_handle_names(handle: usize, map: &SignalMap, tree: &NameTree) -> Vec<S
     }
 }
 
+/// A time in diff output. The last change of a signal at a time is shown at
+/// `TIME`, and the changes before it (delta cycles) at `TIME(DELTA)`, where
+/// `DELTA` counts the changes from 0.
+#[derive(Clone, Copy, Debug)]
+struct DeltaTime {
+    time: u64,
+    delta: Option<usize>,
+}
+
+impl DeltaTime {
+    /// The time of change `n` of the `count` changes of a signal at `time`.
+    fn new(time: u64, n: usize, count: usize) -> Self {
+        DeltaTime {
+            time,
+            delta: (n + 1 < count).then_some(n),
+        }
+    }
+}
+
+impl fmt::Display for DeltaTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.delta {
+            Some(delta) => write!(f, "{}({})", self.time, delta),
+            None => write!(f, "{}", self.time),
+        }
+    }
+}
+
 /// Write a `value1 != value2` row for every name `handle1` resolves to in file1.
 fn emit_value_diff<W: Write>(
     writer: &mut W,
     handle1: usize,
     hier1: &WaveHierarchy,
-    time: u64,
+    time: DeltaTime,
     value1: &OwnedSignalValue,
     value2: &OwnedSignalValue,
 ) -> std::io::Result<()> {
@@ -318,59 +349,117 @@ fn emit_value_diff<W: Write>(
     Ok(())
 }
 
+/// Write a `value message` row for every name `handle1` resolves to in file1.
+fn emit_file1_only<W: Write>(
+    writer: &mut W,
+    handle1: usize,
+    hier1: &WaveHierarchy,
+    time: DeltaTime,
+    value: &OwnedSignalValue,
+    msg: &str,
+) -> std::io::Result<()> {
+    for name in format_handle_names(handle1, &hier1.signal_map, &hier1.names) {
+        writeln!(writer, "{} {} {} {}", time, name, value, msg)?;
+    }
+    Ok(())
+}
+
 /// Write a single `value (only in file2)` row for an already-resolved name.
 fn emit_file2_only<W: Write>(
     writer: &mut W,
     name: &str,
-    time: u64,
+    time: DeltaTime,
     value: &OwnedSignalValue,
 ) -> std::io::Result<()> {
     writeln!(writer, "{} {} {} (only in file2)", time, name, value)
 }
 
-/// The nth buffered file2 change for a (time, handle) key.
-fn buffered_change<'a>(
-    buffered2: &'a HashMap<(u64, usize), OwnedSignalValue>,
-    repeated2: &'a HashMap<(u64, usize), Vec<OwnedSignalValue>>,
-    key: (u64, usize),
-    n: usize,
-) -> Option<&'a OwnedSignalValue> {
-    match n {
-        0 => buffered2.get(&key),
-        _ => repeated2.get(&key)?.get(n - 1),
+/// For each change of a time step, how many changes of the same signal follow
+/// it in the step, and for each signal, its number of changes in the step.
+fn count_step_changes(
+    changes: &[SignalChange],
+    counts: &mut HashMap<usize, usize>,
+    remaining: &mut Vec<usize>,
+) {
+    counts.clear();
+    remaining.clear();
+    // Walk backwards so that the last change of each signal is the first one
+    // seen: most signals change once per time step.
+    for change in changes.iter().rev() {
+        let count = counts.entry(change.handle).or_insert(0);
+        remaining.push(*count);
+        *count += 1;
     }
+    remaining.reverse();
 }
 
-/// Remove the file2 changes at `time` that file1 has been compared with.
-fn evict_matched(
-    time: u64,
-    buffered2: &mut HashMap<(u64, usize), OwnedSignalValue>,
-    repeated2: &mut HashMap<(u64, usize), Vec<OwnedSignalValue>>,
-    matched: &HashSet<(usize, usize)>,
-    repeated: &HashMap<(usize, usize), usize>,
-) {
-    for &(_, handle) in matched {
-        buffered2.remove(&(time, handle));
+/// File2 changes read from the channel but not compared yet, by (time, handle).
+#[derive(Default)]
+struct Buffered2 {
+    /// The first change of a signal at a time.
+    first: HashMap<(u64, usize), OwnedSignalValue>,
+    /// Its later changes at the same time, in order. Most signals change at
+    /// most once per time step, so this is usually empty.
+    later: HashMap<(u64, usize), Vec<OwnedSignalValue>>,
+}
+
+impl Buffered2 {
+    fn push(&mut self, key: (u64, usize), value: OwnedSignalValue) {
+        match self.first.entry(key) {
+            Entry::Vacant(entry) => {
+                entry.insert(value);
+            }
+            Entry::Occupied(_) => self.later.entry(key).or_default().push(value),
+        }
     }
-    // Several file1 handles can map to one file2 handle; drain the most any compared.
-    let mut extra: HashMap<usize, usize> = HashMap::new();
-    for (&(_, handle), &count) in repeated {
-        let max = extra.entry(handle).or_insert(0);
-        *max = (*max).max(count);
+
+    fn has_later(&self, key: (u64, usize)) -> bool {
+        !self.later.is_empty() && self.later.contains_key(&key)
     }
-    for (handle, count) in extra {
-        if let Some(values) = repeated2.get_mut(&(time, handle)) {
-            values.drain(..count.min(values.len()));
-            if values.is_empty() {
-                repeated2.remove(&(time, handle));
+
+    /// The position and value of the last change for `key`.
+    fn last(&self, key: (u64, usize)) -> Option<(usize, &OwnedSignalValue)> {
+        let first = self.first.get(&key)?;
+        if !self.later.is_empty() {
+            if let Some(later) = self.later.get(&key) {
+                if let Some(value) = later.last() {
+                    return Some((later.len(), value));
+                }
             }
         }
+        Some((0, first))
+    }
+
+    /// Change `n` for `key`.
+    fn get(&self, key: (u64, usize), n: usize) -> Option<&OwnedSignalValue> {
+        match n {
+            0 => self.first.get(&key),
+            _ => self.later.get(&key)?.get(n - 1),
+        }
+    }
+
+    /// Remove and return all changes for `key`, in order.
+    fn take(&mut self, key: (u64, usize)) -> Vec<OwnedSignalValue> {
+        let Some(first) = self.first.remove(&key) else {
+            return Vec::new();
+        };
+        let mut values = vec![first];
+        if let Some(later) = self.later.remove(&key) {
+            values.extend(later);
+        }
+        values
     }
 }
 
 /// Consumes batches from `rx1` (file1) and `rx2` (file2), buffering as needed to
 /// match signals across potentially different orderings. Returns `true` if differences
 /// were found.
+///
+/// File1 is compared one time step at a time, once file2 has been read past
+/// that time. The last change of a signal at a time is compared with its last
+/// change at that time in file2, and the changes before it (delta cycles) with
+/// the changes at the same position in file2, unless `no_delta` is set.
+#[allow(clippy::too_many_arguments)]
 fn compare_signal_channels<W: Write>(
     writer: &mut W,
     rx1: channel::Receiver<TimeBatch>,
@@ -379,102 +468,82 @@ fn compare_signal_channels<W: Write>(
     hier1: &WaveHierarchy,
     hier2: &WaveHierarchy,
     real_epsilon: Option<f64>,
+    no_delta: bool,
 ) -> std::io::Result<bool> {
     let mut has_differences = false;
-    // File2 changes we've read from the channel but haven't matched yet,
-    // keyed by (time, handle) so we can look them up when file1 catches up.
-    let mut buffered2: HashMap<(u64, usize), OwnedSignalValue> = HashMap::new();
-    // Later changes of a file2 handle at the same time, in order.
-    let mut repeated2: HashMap<(u64, usize), Vec<OwnedSignalValue>> = HashMap::new();
-    // (file1 handle, file2 handle) pairs compared at the current time step,
-    // so we can evict their buffer entries when we advance to the next time.
-    let mut matched_at_current_time: HashSet<(usize, usize)> = HashSet::new();
-    // Number of extra changes of a pair in file1 at the current time step.
-    // The nth change of a signal in file1 is compared with its nth change at
-    // the same time in file2.
-    let mut repeated_at_current_time: HashMap<(usize, usize), usize> = HashMap::new();
-    let mut prev_time: Option<u64> = None;
+    // File2 changes we've read from the channel but haven't matched yet.
+    let mut buffered2 = Buffered2::default();
+    // File2 changes before the last at a time that file1 had no counterpart
+    // for, reported with the rest of file2's unmatched changes at the end.
+    let mut leftovers2: Vec<(DeltaTime, usize, OwnedSignalValue)> = Vec::new();
+    // The time of the last batch read from file2.
+    let mut latest_time2: Option<u64> = None;
     let mut source2_ended = false;
 
-    // Drive the comparison from file1's batch stream.
-    for batch1 in &rx1 {
-        // When we move to a new time step, evict buffer entries for file2
-        // handles that were already matched -- they won't be needed again.
-        if let Some(pt) = prev_time {
-            if pt != batch1.time {
-                evict_matched(
-                    pt,
-                    &mut buffered2,
-                    &mut repeated2,
-                    &matched_at_current_time,
-                    &repeated_at_current_time,
-                );
-                matched_at_current_time.clear();
-                repeated_at_current_time.clear();
-            }
+    // File1's changes at the current time step, which may span batches.
+    let mut step: Vec<SignalChange> = Vec::new();
+    let mut step_time: Option<u64> = None;
+    let mut counts1: HashMap<usize, usize> = HashMap::new();
+    let mut remaining1: Vec<usize> = Vec::new();
+    // (file2 handle, file1 handle) pairs compared at the current time step,
+    // so we can evict their buffer entries when the step is done.
+    let mut compared: Vec<(usize, usize)> = Vec::new();
+
+    loop {
+        let batch1 = rx1.recv().ok();
+        if matches!((&batch1, step_time), (Some(batch), Some(time)) if batch.time == time) {
+            step.extend(batch1.unwrap().changes);
+            continue;
         }
-        prev_time = Some(batch1.time);
-        let t1 = batch1.time;
 
-        for change1 in batch1.changes {
-            if let Some(handles2) = handle_mapping.get(&change1.handle) {
-                for &handle2 in handles2 {
-                    let n = if matched_at_current_time.insert((change1.handle, handle2)) {
-                        0
-                    } else {
-                        let extra = repeated_at_current_time
-                            .entry((change1.handle, handle2))
-                            .or_insert(0);
-                        *extra += 1;
-                        *extra
-                    };
-                    let mut saw_time_in_source2 = false;
-
-                    // Read ahead on file2's channel until we find the target
-                    // change or pass it.  Entire batches are drained into the
-                    // buffer at once.
-                    if buffered_change(&buffered2, &repeated2, (t1, handle2), n).is_none()
-                        && !source2_ended
-                    {
-                        loop {
-                            match rx2.recv() {
-                                Ok(batch2) => {
-                                    let t2 = batch2.time;
-                                    if t2 == t1 {
-                                        saw_time_in_source2 = true;
-                                    }
-                                    for c in batch2.changes {
-                                        // The first change may already have been matched and
-                                        // evicted while later ones are left: keep the order.
-                                        match buffered2.entry((t2, c.handle)) {
-                                            Entry::Vacant(entry)
-                                                if !repeated2.contains_key(&(t2, c.handle)) =>
-                                            {
-                                                entry.insert(c.value);
-                                            }
-                                            _ => repeated2
-                                                .entry((t2, c.handle))
-                                                .or_default()
-                                                .push(c.value),
-                                        }
-                                    }
-                                    if t2 > t1
-                                        || buffered_change(&buffered2, &repeated2, (t1, handle2), n)
-                                            .is_some()
-                                    {
-                                        break;
-                                    }
-                                }
-                                Err(_) => {
-                                    source2_ended = true;
-                                    break;
-                                }
-                            }
+        if let Some(time) = step_time {
+            // Read file2 until every change at this time is buffered.
+            let mut file2_has_time = latest_time2 == Some(time);
+            while !source2_ended && latest_time2.is_none_or(|t2| t2 <= time) {
+                match rx2.recv() {
+                    Ok(batch2) => {
+                        file2_has_time |= batch2.time == time;
+                        latest_time2 = Some(batch2.time);
+                        for c in batch2.changes {
+                            buffered2.push((batch2.time, c.handle), c.value);
                         }
                     }
+                    Err(_) => source2_ended = true,
+                }
+            }
 
-                    if let Some(value2) = buffered_change(&buffered2, &repeated2, (t1, handle2), n)
-                    {
+            count_step_changes(&step, &mut counts1, &mut remaining1);
+            for (change1, &remaining) in step.iter().zip(&remaining1) {
+                if remaining > 0 && no_delta {
+                    continue;
+                }
+                let Some(handles2) = handle_mapping.get(&change1.handle) else {
+                    continue;
+                };
+                for &handle2 in handles2 {
+                    let key = (time, handle2);
+                    let last2 = buffered2.last(key);
+                    let (delta_time, value2) = if remaining == 0 {
+                        compared.push((handle2, change1.handle));
+                        (
+                            DeltaTime { time, delta: None },
+                            last2.map(|(_, value)| value),
+                        )
+                    } else {
+                        let n = counts1[&change1.handle] - 1 - remaining;
+                        let value2 = match last2 {
+                            Some((n2, _)) if n < n2 => buffered2.get(key, n),
+                            _ => None,
+                        };
+                        (
+                            DeltaTime {
+                                time,
+                                delta: Some(n),
+                            },
+                            value2,
+                        )
+                    };
+                    if let Some(value2) = value2 {
                         let use_real_epsilon =
                             handles_are_real(hier1, change1.handle, hier2, handle2);
                         if !change1
@@ -486,38 +555,70 @@ fn compare_signal_channels<W: Write>(
                                 writer,
                                 change1.handle,
                                 hier1,
-                                t1,
+                                delta_time,
                                 &change1.value,
                                 value2,
                             )?;
                         }
                     } else {
                         has_differences = true;
-                        let msg = if saw_time_in_source2 || buffered2.contains_key(&(t1, handle2)) {
+                        let msg = if file2_has_time {
                             "(not in file2)"
                         } else {
                             "(missing time in file2)"
                         };
-                        for name in
-                            format_handle_names(change1.handle, &hier1.signal_map, &hier1.names)
-                        {
-                            writeln!(writer, "{} {} {} {}", t1, name, change1.value, msg)?;
-                        }
+                        emit_file1_only(
+                            writer,
+                            change1.handle,
+                            hier1,
+                            delta_time,
+                            &change1.value,
+                            msg,
+                        )?;
                     }
                 }
             }
-        }
-    }
 
-    // Evict the last time step's matched entries before reporting leftovers.
-    if let Some(pt) = prev_time {
-        evict_matched(
-            pt,
-            &mut buffered2,
-            &mut repeated2,
-            &matched_at_current_time,
-            &repeated_at_current_time,
-        );
+            // Evict the compared file2 changes. File2 changes before the last
+            // that file1 had no counterpart for are kept to report at the end.
+            let mut repeated: Vec<(usize, usize)> = Vec::new();
+            for &(handle2, handle1) in &compared {
+                if buffered2.has_later((time, handle2)) {
+                    repeated.push((handle2, counts1[&handle1] - 1));
+                } else {
+                    buffered2.first.remove(&(time, handle2));
+                }
+            }
+            compared.clear();
+            // Several file1 handles can map to one file2 handle; the one with
+            // the most changes decides how many were compared.
+            repeated.sort_unstable();
+            repeated.reverse();
+            repeated.dedup_by_key(|&mut (handle2, _)| handle2);
+            for (handle2, compared_before_last) in repeated {
+                let values = buffered2.take((time, handle2));
+                let count = values.len();
+                if !no_delta {
+                    for (n, value) in values
+                        .into_iter()
+                        .enumerate()
+                        .take(count - 1)
+                        .skip(compared_before_last)
+                    {
+                        leftovers2.push((DeltaTime::new(time, n, count), handle2, value));
+                    }
+                }
+            }
+            step.clear();
+        }
+
+        match batch1 {
+            Some(batch) => {
+                step_time = Some(batch.time);
+                step = batch.changes;
+            }
+            None => break,
+        }
     }
 
     // Anything still in the buffer was in file2 but never matched by file1.
@@ -525,44 +626,69 @@ fn compare_signal_channels<W: Write>(
     // reader still emits them but they're not part of the comparison set.
     // Sort rows before printing so diff output does not depend on HashMap
     // iteration order.
-    let owned: Vec<((u64, usize, usize), OwnedSignalValue)> = buffered2
-        .drain()
-        .map(|((t, h), value)| ((t, h, 0), value))
-        .chain(repeated2.drain().flat_map(|((t, h), values)| {
-            values
-                .into_iter()
-                .enumerate()
-                .map(move |(i, value)| ((t, h, i + 1), value))
-        }))
-        .filter(|((_t, h, _n), _)| hier2.signal_map.contains_key(h))
-        .collect();
+    let mut owned = leftovers2;
+    let keys: Vec<(u64, usize)> = buffered2.first.keys().copied().collect();
+    for key in keys {
+        let values = buffered2.take(key);
+        let count = values.len();
+        for (n, value) in values.into_iter().enumerate() {
+            if n + 1 == count || !no_delta {
+                owned.push((DeltaTime::new(key.0, n, count), key.1, value));
+            }
+        }
+    }
+    owned.retain(|(_, handle, _)| hier2.signal_map.contains_key(handle));
     if !owned.is_empty() {
         has_differences = true;
     }
     let mut file2_only_rows: Vec<(u64, String, usize, usize)> = Vec::new();
-    for (idx, ((time, handle, n), _)) in owned.iter().enumerate() {
+    for (idx, (time, handle, _)) in owned.iter().enumerate() {
         for name in format_handle_names(*handle, &hier2.signal_map, &hier2.names) {
-            file2_only_rows.push((*time, name, *n, idx));
+            // The last change at a time sorts after the ones before it.
+            file2_only_rows.push((time.time, name, time.delta.unwrap_or(usize::MAX), idx));
         }
     }
     file2_only_rows.sort_by(|a, b| (a.0, &a.1, a.2).cmp(&(b.0, &b.1, b.2)));
-    for (time, name, _, idx) in file2_only_rows {
-        emit_file2_only(writer, &name, time, &owned[idx].1)?;
+    for (_, name, _, idx) in file2_only_rows {
+        emit_file2_only(writer, &name, owned[idx].0, &owned[idx].2)?;
     }
 
-    // Drain any remaining file2 batches we never read from the channel.
-    // Only changes for handles still in hier2 count -- filtered-out handles
-    // are streamed by the reader but excluded from the comparison set.
+    // Drain any remaining file2 batches we never read from the channel, one
+    // time step at a time. Only changes for handles still in hier2 count --
+    // filtered-out handles are streamed by the reader but excluded from the
+    // comparison set.
     if !source2_ended {
-        for batch2 in &rx2 {
-            for change2 in &batch2.changes {
-                if !hier2.signal_map.contains_key(&change2.handle) {
-                    continue;
+        let mut step2: Vec<SignalChange> = Vec::new();
+        let mut step2_time: Option<u64> = None;
+        loop {
+            let batch2 = rx2.recv().ok();
+            if matches!((&batch2, step2_time), (Some(batch), Some(time)) if batch.time == time) {
+                step2.extend(batch2.unwrap().changes);
+                continue;
+            }
+            if let Some(time) = step2_time {
+                count_step_changes(&step2, &mut counts1, &mut remaining1);
+                for (change2, &remaining) in step2.iter().zip(&remaining1) {
+                    if (remaining > 0 && no_delta)
+                        || !hier2.signal_map.contains_key(&change2.handle)
+                    {
+                        continue;
+                    }
+                    has_differences = true;
+                    let count = counts1[&change2.handle];
+                    let delta_time = DeltaTime::new(time, count - 1 - remaining, count);
+                    for name in format_handle_names(change2.handle, &hier2.signal_map, &hier2.names)
+                    {
+                        emit_file2_only(writer, &name, delta_time, &change2.value)?;
+                    }
                 }
-                has_differences = true;
-                for name in format_handle_names(change2.handle, &hier2.signal_map, &hier2.names) {
-                    emit_file2_only(writer, &name, batch2.time, &change2.value)?;
+            }
+            match batch2 {
+                Some(batch) => {
+                    step2_time = Some(batch.time);
+                    step2 = batch.changes;
                 }
+                None => break,
             }
         }
     }
@@ -863,6 +989,7 @@ pub fn diff_wave_sets<W: Write>(
         &hier1,
         &hier2,
         options.real_epsilon,
+        options.no_delta,
     );
 
     let thread1_result = match thread1.join() {
@@ -961,6 +1088,7 @@ mod tests {
                 &hierarchy,
                 &hierarchy,
                 Some(0.001),
+                false,
             )
             .unwrap());
             assert!(output.is_empty());
@@ -998,12 +1126,25 @@ mod tests {
         let name = hierarchy
             .names
             .format_path(hierarchy.signal_map[&0].vars[0].name);
-        for (values1, values2, expected) in [
-            ("01", "01", String::new()),
-            ("010", "010", String::new()),
-            ("0", "01", format!("0 {name} 1 (only in file2)\n")),
-            ("01", "0", format!("0 {name} 1 (not in file2)\n")),
-            ("011", "001", format!("0 {name} 1 != 0\n")),
+        for (values1, values2, no_delta, expected) in [
+            ("01", "01", false, String::new()),
+            ("010", "010", false, String::new()),
+            (
+                "0",
+                "01",
+                false,
+                format!("0 {name} 0 != 1\n0(0) {name} 0 (only in file2)\n"),
+            ),
+            (
+                "01",
+                "0",
+                false,
+                format!("0(0) {name} 0 (not in file2)\n0 {name} 1 != 0\n"),
+            ),
+            ("011", "001", false, format!("0(1) {name} 1 != 0\n")),
+            ("011", "001", true, String::new()),
+            ("01", "0", true, format!("0 {name} 1 != 0\n")),
+            ("0", "01", true, format!("0 {name} 0 != 1\n")),
         ] {
             let (tx1, rx1) = channel::unbounded();
             let (tx2, rx2) = channel::unbounded();
@@ -1029,11 +1170,63 @@ mod tests {
                 &hierarchy,
                 &hierarchy,
                 None,
+                no_delta,
             )
             .unwrap();
             assert_eq!(has_differences, !expected.is_empty());
             assert_eq!(String::from_utf8(output).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn signal_missing_at_a_time_file2_has_is_not_in_file2() {
+        let (_, hierarchy) =
+            crate::open_wave_file(Path::new("tests/data/counter.vcd"), &NameOptions::default())
+                .unwrap();
+        let name = |handle: usize| {
+            hierarchy
+                .names
+                .format_path(hierarchy.signal_map[&handle].vars[0].name)
+        };
+        let change = |handle, value: &[u8]| SignalChange {
+            handle,
+            value: OwnedSignalValue::String(value.to_vec()),
+        };
+        let (tx1, rx1) = channel::unbounded();
+        let (tx2, rx2) = channel::unbounded();
+        tx1.send(TimeBatch {
+            time: 10,
+            changes: vec![change(0, b"1"), change(1, b"1")],
+        })
+        .unwrap();
+        for (time, value) in [(10, b"1"), (20, b"0")] {
+            tx2.send(TimeBatch {
+                time,
+                changes: vec![change(0, value)],
+            })
+            .unwrap();
+        }
+        drop((tx1, tx2));
+        let mut output = Vec::new();
+        assert!(compare_signal_channels(
+            &mut output,
+            rx1,
+            rx2,
+            &HashMap::from([(0, vec![0]), (1, vec![1])]),
+            &hierarchy,
+            &hierarchy,
+            None,
+            false,
+        )
+        .unwrap());
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            format!(
+                "10 {} 1 (not in file2)\n20 {} 0 (only in file2)\n",
+                name(1),
+                name(0)
+            )
+        );
     }
 
     #[test]
@@ -1073,10 +1266,13 @@ mod tests {
             &hierarchy,
             &hierarchy,
             None,
+            false,
         )
         .unwrap());
-        let mut expected = format!("0 {name} 1 (only in file2)\n").repeat(BATCH_SIZE - 1);
-        expected.push_str(&format!("0 {name} x (only in file2)\n"));
+        let mut expected = format!("0 {name} 0 != x\n0(0) {name} 0 (only in file2)\n");
+        for n in 1..BATCH_SIZE {
+            expected.push_str(&format!("0({n}) {name} 1 (only in file2)\n"));
+        }
         assert_eq!(String::from_utf8(output).unwrap(), expected);
     }
 

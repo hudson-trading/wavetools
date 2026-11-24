@@ -46,6 +46,7 @@ wavecat [OPTIONS] <FILE>...
 | `-a, --attrs` | Print variable attributes (type, size, direction, attributes) |
 | `--sort` | Sort entries lexically |
 | `--time-pound` | Prefix times with `#` |
+| `--no-delta` | Show only the last value of each signal at each time, leaving out delta cycles |
 | `--no-range-space` | Remove space before range brackets (e.g. `dat[3:0]` instead of `dat [3:0]`) |
 | `--format <FORMAT>` | Force input file format (`fst` or `vcd`) instead of auto-detecting |
 | `-o, --out <FILE>` | Write a waveform file; infer format from `.vcd` or `.fst` (case-insensitive) |
@@ -122,6 +123,27 @@ VCD-style time format:
 wavecat --time-pound sim.fst
 ```
 
+A signal that changes more than once at the same time (delta cycles) has its
+last change shown at `TIME` and the ones before it at `TIME(DELTA)`, counting
+from 0. `--no-delta` shows only the last one:
+
+```
+$ wavecat repeated_changes.vcd
+0 t.a 0
+0 t.b [3:0] 0000
+10(0) t.a 1
+10(1) t.a 0
+10 t.a 1
+10 t.b [3:0] 0001
+20 t.a 0
+$ wavecat --no-delta repeated_changes.vcd
+0 t.a 0
+0 t.b [3:0] 0000
+10 t.a 1
+10 t.b [3:0] 0001
+20 t.a 0
+```
+
 Force VCD parsing:
 
 ```
@@ -151,8 +173,8 @@ Without `--out`, wavecat continues to print its text listing to stdout. With
 `--out`, it writes a waveform file and prints no listing. An unrecognized or
 missing output extension requires `--out-format`. Existing output files are
 replaced; an output file must differ from every input file. `--out` cannot be
-combined with `--names` or `--attrs`. `--sort` and `--time-pound` affect only the
-text listing.
+combined with `--names` or `--attrs`. `--sort`, `--time-pound` and `--no-delta`
+affect only the text listing.
 
 ## wavediff
 
@@ -181,6 +203,7 @@ they are included in their respective sets.
 | `--set1 <FILE>` | File(s) for set 1; may be specified multiple times |
 | `--set2 <FILE>` | File(s) for set 2; may be specified multiple times |
 | `-f, --filter <PATTERN>` | Filter signals by glob pattern; may be repeated or space-separated |
+| `--no-delta` | Compare only the last value of each signal at each time, ignoring delta cycles |
 
 ### Exit codes
 
@@ -212,6 +235,26 @@ A clock edge moved from time 20 to time 21:
 $ wavediff golden.fst shifted.fst
 20 t.clk 0 (missing time in file2)
 21 t.clk 0 (only in file2)
+```
+
+A signal changes more than once at the same time (delta cycles). The last
+change of a signal at a time is compared with its last change in the other
+file and shown at `TIME`; the changes before it are compared in order and shown
+at `TIME(DELTA)`, counting from 0:
+
+```
+$ wavediff repeated_changes.vcd repeated_changes_glitch.vcd
+10(1) t.a 0 != 1
+10 t.b [3:0] 0001 != 0010
+10(0) t.b [3:0] 0001 (only in file2)
+```
+
+Compare only the last value of each signal at each time, which is what
+waveform viewers show:
+
+```
+$ wavediff --no-delta repeated_changes.vcd repeated_changes_glitch.vcd
+10 t.b [3:0] 0001 != 0010
 ```
 
 Compare an FST file against a VCD file:

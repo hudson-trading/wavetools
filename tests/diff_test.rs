@@ -190,8 +190,33 @@ fn test_repeated_changes_compared_in_order() {
     );
     assert!(has_diff);
     assert_eq!(
-        output, "10 t.a 0 != 1\n10 t.b [3:0] 0010 (only in file2)\n",
-        "the nth change at a time should be compared with the nth change"
+        output,
+        "10(1) t.a 0 != 1\n10 t.b [3:0] 0001 != 0010\n10(0) t.b [3:0] 0001 (only in file2)\n",
+        "the last change at a time should be compared with the last change, \
+         and the ones before it in order"
+    );
+}
+
+#[test]
+fn test_repeated_changes_no_delta_compares_last_values() {
+    let (reader1, hier1, reader2, hier2) = open_and_read_waves(
+        "tests/data/repeated_changes.vcd",
+        "tests/data/repeated_changes_glitch.vcd",
+        &NameOptions::default(),
+    )
+    .expect("Failed to open wave files");
+    let mut output = Vec::new();
+    let options = DiffOptions {
+        start: 0,
+        end: None,
+        real_epsilon: None,
+        no_delta: true,
+    };
+    assert!(diff_waves(&mut output, reader1, hier1, reader2, hier2, &options).unwrap());
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "10 t.b [3:0] 0001 != 0010\n",
+        "only the last change of each signal at a time should be compared"
     );
 }
 
@@ -278,6 +303,7 @@ fn run_wave_diff_test(file1: &str, file2: &str) -> (bool, String) {
         start: 0,
         end: None,
         real_epsilon: None,
+        no_delta: false,
     };
     let has_differences = diff_waves(&mut output, reader1, hier1, reader2, hier2, &options)
         .expect("Failed to diff files");
@@ -367,6 +393,7 @@ fn run_wave_diff_test_with_epsilon(
         start: 0,
         end: None,
         real_epsilon,
+        no_delta: false,
     };
     let has_differences = diff_waves(&mut output, reader1, hier1, reader2, hier2, &options)
         .expect("Failed to diff files");
@@ -496,6 +523,7 @@ fn run_wave_diff_test_with_range(
         start,
         end,
         real_epsilon: None,
+        no_delta: false,
     };
     let has_differences = diff_waves(&mut output, reader1, hier1, reader2, hier2, &options)
         .expect("Failed to diff files");
@@ -1086,6 +1114,7 @@ fn run_wave_diff_test_with_filter(file1: &str, file2: &str, filter: &[&str]) -> 
         start: 0,
         end: None,
         real_epsilon: None,
+        no_delta: false,
     };
     let has_differences =
         wavetools::diff_waves(&mut output, reader1, hier1, reader2, hier2, &options)
