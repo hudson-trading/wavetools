@@ -13,8 +13,6 @@ const REQUIRED_LINES: &[&str] = &[
     "SPDX-License-Identifier: MIT",
 ];
 
-const SKIP_DIRS: &[&str] = &[".git", "target"];
-
 /// Returns true if the file appears to be binary (contains a NUL byte in the
 /// first 8 KB, same heuristic as `grep -I`).
 fn is_binary(path: &Path) -> bool {
@@ -30,29 +28,75 @@ fn is_binary(path: &Path) -> bool {
 }
 
 fn collect_files(dir: &Path, files: &mut Vec<std::path::PathBuf>, rs_only: bool) {
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let entry = entry.unwrap();
+    // Honor .gitignore even in source archives without a Git checkout.
+    let walker = ignore::WalkBuilder::new(dir)
+        .require_git(false)
+        .hidden(false)
+        .git_global(false)
+        .git_exclude(false)
+        .ignore(false)
+        // Source archives may omit .gitignore; always exclude build output.
+        .filter_entry(|entry| entry.file_name() != ".git" && entry.file_name() != "target")
+        .build();
+    for entry in walker {
+        let entry = entry.unwrap_or_else(|err| panic!("Failed to walk {}: {err}", dir.display()));
         let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().unwrap().to_str().unwrap();
-            if SKIP_DIRS.contains(&name) {
-                continue;
-            }
-            // Skip vendored third-party code (copyright test only covers our files)
-            if rs_only && name == "vcd" {
-                continue;
-            }
-            collect_files(&path, files, rs_only);
-        } else if path.is_file() {
+        if path.is_file() {
             if rs_only {
-                if path.extension().is_some_and(|ext| ext == "rs") {
-                    files.push(path);
+                // The copyright test excludes vendored third-party code.
+                if path.extension().is_some_and(|ext| ext == "rs")
+                    && !path.components().any(|part| part.as_os_str() == "vcd")
+                {
+                    files.push(path.to_path_buf());
                 }
-            } else if !is_binary(&path) {
-                files.push(path);
+            } else if !is_binary(path) {
+                files.push(path.to_path_buf());
             }
         }
     }
+    files.sort();
+    files.dedup();
+}
+
+#[test]
+fn test_collect_files_honors_gitignore_without_git() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root =
+        std::env::temp_dir().join(format!("wavetools-hygiene-{}-{unique}", std::process::id()));
+    std::fs::create_dir_all(root.join("nested")).unwrap();
+    std::fs::create_dir_all(root.join("target")).unwrap();
+    std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+    std::fs::write(root.join("nested/.gitignore"), "!keep.log\n").unwrap();
+    for name in [
+        ".hidden",
+        "skip.log",
+        "nested/skip.log",
+        "nested/keep.log",
+        "target/build.txt",
+    ] {
+        std::fs::write(root.join(name), "text\n").unwrap();
+    }
+
+    let mut files = Vec::new();
+    collect_files(&root, &mut files, false);
+    let relative: Vec<_> = files
+        .iter()
+        .map(|path| path.strip_prefix(&root).unwrap().to_path_buf())
+        .collect();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(
+        relative,
+        [
+            ".gitignore",
+            ".hidden",
+            "nested/.gitignore",
+            "nested/keep.log"
+        ]
+        .map(std::path::PathBuf::from),
+    );
 }
 
 #[test]
@@ -66,7 +110,8 @@ fn test_all_source_files_have_copyright() {
 
     let mut missing = Vec::new();
     for file in &files {
-        let contents = std::fs::read_to_string(file).unwrap();
+        let contents = std::fs::read_to_string(file)
+            .unwrap_or_else(|err| panic!("Failed to read {}: {err}", file.display()));
         for line in REQUIRED_LINES {
             if !contents.contains(line) {
                 missing.push(format!("{}: missing '{}'", file.display(), line));
@@ -91,7 +136,8 @@ fn test_no_non_ascii_characters() {
 
     let mut violations = Vec::new();
     for file in &files {
-        let contents = std::fs::read_to_string(file).unwrap();
+        let contents = std::fs::read_to_string(file)
+            .unwrap_or_else(|err| panic!("Failed to read {}: {err}", file.display()));
         for (line_num, line) in contents.lines().enumerate() {
             if line.bytes().any(|b| b > 127) {
                 violations.push(format!("{}:{}: {}", file.display(), line_num + 1, line,));

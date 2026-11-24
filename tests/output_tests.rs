@@ -209,6 +209,7 @@ fn four_state_vectors_and_final_timestamp() {
     for ext in ["vcd", "fst"] {
         let out = temp.path(&format!("out.{ext}"));
         success(cat(&[&input, "-o", &out]));
+        success(diff(&[&input, &out]));
         let expected = if ext == "fst" {
             "0 bus xxxxxxxx\n5 bus zzzzzzzz\n10 bus 00000010\n"
         } else {
