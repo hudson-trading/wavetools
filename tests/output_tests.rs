@@ -141,7 +141,7 @@ fn slices_keep_initial_state_and_absolute_time() {
 #[test]
 fn real_string_and_top_level_vcd() {
     let temp = Temp::new();
-    let input = temp.input("$var real 64 ! r $end\n$var string 0 @ text $end\n$enddefinitions $end\n#0\nr1.5 !\nshello @\n#5\nr-2.25 !\nsworld @\n");
+    let input = temp.input("$var real 64 ! r $end\n$var string 0 @ text $end\n$enddefinitions $end\n#0\nr1.5 !\nshello @\n#5\nr-2.25 !\nsworld @\n#10\nr1.2345678901234567e-20 !\n#15\nr-1e300 !\n");
     let out = temp.path("out.vcd");
     success(cat(&["tests/data/wide_bits.vcd", "-o", &out]));
     success(diff(&["tests/data/wide_bits.vcd", &out]));

@@ -256,7 +256,13 @@ impl<W: io::Write> Writer<W> {
 
     /// Writes a change to a real variable.
     pub fn change_real(&mut self, id: IdCode, v: f64) -> io::Result<()> {
-        writeln!(self.writer, "r{} {}", v, id)
+        // `{}` never uses an exponent, so very large or small values would
+        // exceed the parser's token length.
+        if v == 0.0 || (1e-5..1e16).contains(&v.abs()) {
+            writeln!(self.writer, "r{} {}", v, id)
+        } else {
+            writeln!(self.writer, "r{:e} {}", v, id)
+        }
     }
 
     /// Writes a change to a string variable.
